@@ -1,0 +1,6 @@
+.DS_Store
+node_modules/
+*.log
+
+# Original assessment brief — remove this line if you want it in the repo.
+assessment.md
