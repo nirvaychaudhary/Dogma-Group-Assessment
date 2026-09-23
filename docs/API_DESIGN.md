@@ -1,6 +1,8 @@
-# API Design
+# application programming interface (API) Design
 
-REST over HTTPS, JSON only, versioned at `/api/v1`. The OpenAPI 3.1 document is generated from the Pydantic schemas rather than maintained by hand, so the specification cannot drift from the implementation.
+Short forms are written out the first time they appear. The full list is in the [glossary](GLOSSARY.md).
+
+Representational State Transfer (REST) over secure web protocol (HTTPS), JavaScript Object Notation (JSON) only, versioned at `/api/v1`. The OpenAPI 3.1 document is generated from the Pydantic schemas rather than maintained by hand, so the specification cannot drift from the implementation.
 
 ---
 
@@ -10,10 +12,10 @@ REST over HTTPS, JSON only, versioned at `/api/v1`. The OpenAPI 3.1 document is 
 |---|---|---|
 | Base path | `/api/v1` | URI versioning is visible in logs, trivially routable at the load balancer, and cacheable. Header-based versioning is purer but harder to debug and to route on |
 | Resource naming | Plural nouns, kebab-case paths, `snake_case` JSON fields | Consistency with Python on both sides of the wire |
-| Identifiers | UUIDv7 | Sortable by creation time like an integer, but non-enumerable. Sequential integer IDs let an attacker walk the object space and turn any authorization gap into a full dump |
-| Timestamps | RFC 3339, UTC, `_at` suffix | Unambiguous |
+| Identifiers | time-sorted unique identifier (UUIDv7) | Sortable by creation time like an integer, but non-enumerable. Sequential integer IDs let an attacker walk the object space and turn any authorization gap into a full dump |
+| Timestamps | Request for Comments (RFC) 3339, UTC, `_at` suffix | Unambiguous |
 | Partial updates | `PATCH` with merge semantics | Clients edit one or two fields; `PUT` forces read-modify-write |
-| Pagination | Opaque cursor, `limit` capped at 100, default 20 | See [System Design §4](SYSTEM_DESIGN.md#4-user-accessing-their-tasks) |
+| Pagination | Opaque cursor, `limit` capped at 100, default 20 | See [System Design section 4](SYSTEM_DESIGN.md#4-user-accessing-their-tasks) |
 | Errors | RFC 9457 `application/problem+json` | A standard, machine-readable error shape |
 | Correlation | `X-Correlation-ID` accepted and always echoed | Client-side support-ticket correlation |
 | Concurrency | `ETag` on single resources, `If-Match` on mutations | Optimistic locking |
@@ -40,7 +42,7 @@ Two roles. Deliberately not more: role proliferation without a driving requireme
 
 | Role | Capabilities |
 |---|---|
-| `user` | Full CRUD on tasks they own. Read and update their own profile |
+| `user` | Full create, read, update, and delete (CRUD) on tasks they own. Read and update their own profile |
 | `admin` | Everything a `user` can do, plus read/update/delete any user's tasks, manage user accounts, read the audit log |
 
 Permissions are expressed as `resource:action` strings (`task:create`, `admin:task:update`, `audit:read`) and resolved through the policy engine. Roles map to permission sets in one table, so migrating to fine-grained or custom roles later is a data change rather than a redesign.
@@ -126,7 +128,7 @@ All errors use RFC 9457. A single shape means clients write one error handler.
 | `412` | `If-Match` did not match the current `ETag` | — |
 | `422` | Semantically invalid: schema violations, illegal state transitions | Syntax errors |
 | `429` | Rate limit exceeded; always carries `Retry-After` | — |
-| `5xx` | Our fault. Never leaks a stack trace, SQL fragment, or internal hostname | Anything the client caused |
+| `5xx` | Our fault. Never leaks a stack trace, Structured Query Language (SQL) fragment, or internal hostname | Anything the client caused |
 
 **On `404` versus `403` for object-level denials.** Returning `403` when a user requests a task they do not own confirms that the task exists. Given enumerable access patterns, that turns the endpoint into an oracle for mapping the object space and for confirming relationships between accounts. Returning `404` costs some debuggability, which I recover by logging the denial internally at high severity with the full context.
 
@@ -140,7 +142,7 @@ All errors use RFC 9457. A single shape means clients write one error handler.
 
 Creates an unverified account and dispatches a verification email.
 
-**Auth:** Public. Rate limited to 5/hour per IP and 3/day per email domain.
+**Auth:** Public. Rate limited to 5/hour per Internet Protocol address (IP) and 3/day per email domain.
 
 **Request**
 
@@ -169,7 +171,7 @@ Creates an unverified account and dispatches a verification email.
 
 | Scenario | Status | Code |
 |---|---|---|
-| Email already registered | `202` | Identical body — see [System Design §1](SYSTEM_DESIGN.md#1-user-registration) |
+| Email already registered | `202` | Identical body — see [System Design section 1](SYSTEM_DESIGN.md#1-user-registration) |
 | Password fails policy | `422` | `WEAK_PASSWORD` |
 | Password found in breach corpus | `422` | `PASSWORD_COMPROMISED` |
 | Rate limited | `429` | `RATE_LIMITED` |
@@ -202,7 +204,7 @@ Creates an unverified account and dispatches a verification email.
 Set-Cookie: refresh_token=<opaque>; HttpOnly; Secure; SameSite=Strict; Path=/api/v1/auth; Max-Age=2592000
 ```
 
-The refresh token is *not* in the JSON body for browser clients — placing it there would require JavaScript to store it, which reintroduces the XSS exposure the `HttpOnly` cookie exists to prevent. Non-browser clients signal with `X-Client-Type: native` and receive it in the body.
+The refresh token is *not* in the JSON body for browser clients — placing it there would require JavaScript to store it, which reintroduces the cross-site scripting (XSS) exposure the `HttpOnly` cookie exists to prevent. Non-browser clients signal with `X-Client-Type: native` and receive it in the body.
 
 | Scenario | Status | Code | Note |
 |---|---|---|---|
@@ -341,7 +343,7 @@ Returns the full representation with an `ETag` header. Supports `If-None-Match` 
 |---|---|---|
 | Task belongs to another user | `404` | `TASK_NOT_FOUND` — indistinguishable from genuine absence |
 | Task soft-deleted | `404` | `TASK_NOT_FOUND` unless `?include_deleted=true` |
-| `task_id` not a UUID | `422` | `INVALID_UUID` |
+| `task_id` not a unique identifier (UUID) | `422` | `INVALID_UUID` |
 | `If-None-Match` matches | `304` | Empty body |
 
 ---
@@ -447,7 +449,7 @@ Privilege change is the step an attacker needs to convert a single compromised a
 | `GET /health/startup` | Boot-time initialisation complete | Gives slow starts room before liveness applies |
 | `GET /metrics` | Prometheus exposition | Bound to the internal network only |
 
-The liveness/readiness distinction is one of the highest-leverage reliability details in the whole design, and it is routinely conflated. See [Availability §3](AVAILABILITY.md#3-application-instance-failure).
+The liveness/readiness distinction is one of the highest-leverage reliability details in the whole design, and it is routinely conflated. See [Availability section 3](AVAILABILITY.md#3-application-instance-failure).
 
 ---
 
@@ -484,8 +486,8 @@ Deprecation is a defined process, not an announcement: advertise `Deprecation` a
 | Omitted | Reasoning |
 |---|---|
 | Bulk task operations | No evidence of need; a bulk endpoint materially complicates transaction and partial-failure semantics. Would return `207 Multi-Status` when added |
-| Webhooks / subscriptions | Real value, real cost: delivery guarantees, retries, SSRF protection on customer-supplied URLs, signature verification. Deserves its own design |
+| Webhooks / subscriptions | Real value, real cost: delivery guarantees, retries, SSRF protection on customer-supplied web addresses (URLs), signature verification. Deserves its own design |
 | WebSocket live updates | Stateful connections change the scaling and deployment model. Polling with `ETag`/`304` is adequate at this scale |
-| GraphQL | See [HLD §14](HLD.md#14-deliberate-non-goals) |
+| GraphQL | See [High-Level Design (HLD) section 14](HLD.md#14-deliberate-non-goals) |
 | Task sharing / collaboration | The requirement is explicitly single-owner. Sharing would replace the ownership model with an ACL model — the single biggest latent change in the design, and one I would not pre-build speculatively |
 | API keys for machine clients | No stated requirement. The token model extends to them cleanly when there is one |

@@ -1,5 +1,7 @@
 # Security Architecture
 
+Short forms are written out the first time they appear. The full list is in the [glossary](GLOSSARY.md).
+
 ## 1. Threat Model First
 
 Controls without a threat model are cargo cult. This system's realistic adversaries and their objectives:
@@ -10,13 +12,15 @@ Controls without a threat model are cargo cult. This system's realistic adversar
 | Authenticated user probing for gaps | Read or modify another user's tasks | Object-level authorization, query-level scoping, `404` responses, denial alerting |
 | Attacker who obtains a token | Persist access | Short access-token lifetime, refresh rotation with reuse detection, denylist |
 | Malicious or compromised administrator | Mass data access | Read auditing, least privilege, self-modification prohibited, anomaly detection |
-| Automated scanner / botnet | Resource exhaustion, known CVEs | WAF, tiered rate limits, dependency scanning, request size caps |
-| Insider with infrastructure access | Direct database access | Encryption at rest, IAM-scoped credentials, no shared logins, audited access |
-| Supply-chain attacker | Malicious dependency | Lockfiles with hashes, SCA in CI, SBOM, image scanning, pinned base images |
+| Automated scanner / botnet | Resource exhaustion, known CVEs | web application firewall (WAF), tiered rate limits, dependency scanning, request size caps |
+| Insider with infrastructure access | Direct database access | Encryption at rest, identity and access management (IAM)-scoped credentials, no shared logins, audited access |
+| Supply-chain attacker | Malicious dependency | Lockfiles with hashes, software composition analysis (SCA) in CI, software bill of materials (SBOM), image scanning, pinned base images |
 
-**The single highest-probability, highest-impact risk is broken object-level authorization** — OWASP API Security Top 10 #1. It is the risk most specific to this system's shape, it is not caught by any perimeter control, and it fails silently. The architecture accordingly treats it as the primary design concern rather than one item on a checklist.
+**The single highest-probability, highest-impact risk is broken object-level authorization.** That is item 1 on the Open Worldwide Application Security Project (OWASP) list of application risks.
 
-Controls are mapped explicitly against the OWASP API Security Top 10 in §11.
+It is the risk most specific to this system's shape. No outer firewall catches it, and it fails silently. The architecture treats it as the main design concern, not one item on a checklist.
+
+Controls are mapped explicitly against the OWASP API Security Top 10 in section 11.
 
 ---
 
@@ -24,19 +28,21 @@ Controls are mapped explicitly against the OWASP API Security Top 10 in §11.
 
 ```mermaid
 flowchart TB
-    L1["Layer 1 — Network edge<br/>TLS 1.3 · WAF/OWASP CRS · L3-L7 DDoS · IP reputation · geo rules"]
-    L2["Layer 2 — Transport<br/>TLS everywhere including internal hops · HSTS preload · mTLS to the database"]
-    L3["Layer 3 — Authentication<br/>Argon2id · EdDSA JWT · refresh rotation with reuse detection · dual-axis throttling"]
-    L4["Layer 4 — Authorization<br/>Role checks · object-level ownership · query scoping · fail closed"]
-    L5["Layer 5 — Input validation<br/>Pydantic strict schemas · unknown fields rejected · size caps · parameterised SQL"]
-    L6["Layer 6 — Application<br/>Least-privilege DB roles · no dynamic SQL · output encoding · secure error handling"]
-    L7["Layer 7 — Data<br/>AES-256 at rest · column encryption for sensitive fields · hashed tokens · retention policy"]
-    L8["Layer 8 — Monitoring<br/>Audit log · security metrics · anomaly detection · alerting · incident response"]
+    edge[1. Edge filter blocks common attacks]
+    encrypt[2. Every connection is encrypted]
+    login[3. Login uses a slow password hash and short-lived passes]
+    permit[4. Permission is checked for the specific task]
+    input[5. Unexpected input is rejected]
+    data[6. The database account cannot edit history]
+    rest[7. Stored data is encrypted]
+    watch[8. Denials and admin views raise an alert]
 
-    L1 --> L2 --> L3 --> L4 --> L5 --> L6 --> L7 --> L8
+    edge --> encrypt --> login --> permit --> input --> data --> rest --> watch
 ```
 
-The organising assumption is that **any single layer will eventually fail**. The design question is not "is this control sufficient" but "what happens after it is bypassed". A leaked access token is bounded by a 15-minute lifetime. A missing authorization decorator is caught by query-level scoping. A SQL injection attempt hits a parameterised statement executed under a database role that cannot read the credentials table.
+The organising assumption is that **any single layer will eventually fail**. The design question is not "is this control sufficient" but "what happens after it is bypassed". A leaked access token is bounded by a 15-minute lifetime.
+
+A missing authorization decorator is caught by query-level scoping. A Structured Query Language (SQL) injection attempt hits a parameterised statement executed under a database role that cannot read the credentials table.
 
 ---
 
@@ -46,7 +52,9 @@ The organising assumption is that **any single layer will eventually fail**. The
 
 **Argon2id**, the Password Hashing Competition winner and the OWASP first recommendation. Parameters: 64 MiB memory, 3 iterations, parallelism 4 — tuned so a single verification costs roughly 200 ms on production hardware, then re-benchmarked annually.
 
-Argon2id over bcrypt and PBKDF2 because it is *memory*-hard. bcrypt and PBKDF2 are only CPU-hard, and GPUs and ASICs parallelise CPU-bound hashing cheaply. Memory hardness makes that hardware advantage expensive. Argon2**id** specifically — the hybrid mode — because Argon2i alone is weaker against time-memory trade-off attacks and Argon2d alone is vulnerable to side channels.
+Argon2id is used instead of bcrypt and PBKDF2 because it is hard on memory, not only on processor time. Special hardware can guess a processor-only hash cheaply. A memory-hard hash makes that hardware expensive.
+
+Argon2**id** specifically — the hybrid mode — because Argon2i alone is weaker against time-memory trade-off attacks and Argon2d alone is vulnerable to side channels.
 
 Operational details: a per-password random salt is embedded in the encoded hash; the work factor is versioned, and a successful login with an outdated factor transparently rehashes; the 128-character maximum bounds the CPU cost so that submitting a megabyte password is not a denial-of-service primitive.
 
@@ -54,7 +62,7 @@ Operational details: a per-password random salt is embedded in the encoded hash;
 
 | Property | Access token | Refresh token |
 |---|---|---|
-| Type | JWT, EdDSA (Ed25519) | Opaque, 256 bits from a CSPRNG |
+| Type | JSON Web Token (JWT), Edwards-curve Digital Signature Algorithm (EdDSA) (Ed25519) | Opaque, 256 bits from a CSPRNG |
 | Lifetime | 15 minutes | 30 days, sliding |
 | Server state | None | SHA-256 hash in PostgreSQL |
 | Claims | `sub`, `role`, `jti`, `iat`, `exp`, `iss`, `aud`, `tv` | n/a |
@@ -68,7 +76,11 @@ The tension this resolves is real: stateless tokens are fast but not revocable; 
 
 ### Key management
 
-Signing keys live in the secrets manager and never touch a repository, an image, or an environment variable in a task definition. Rotation is quarterly and automatic, overlapping: the new key is published to the JWKS endpoint and honoured for verification *before* it is used for signing, so no valid token is ever rejected during a rotation. Each key has a `kid`, and the verifier resolves by `kid` against a cached JWKS with a 5-minute TTL.
+Signing keys live in the secrets manager and never touch a repository, an image, or an environment variable in a task definition.
+
+Rotation is quarterly and automatic, overlapping: the new key is published to the JSON Web Key Set (JWKS) endpoint and honoured for verification *before* it is used for signing, so no valid token is ever rejected during a rotation.
+
+Each key has a `kid`, and the verifier resolves by `kid` against a cached JWKS with a 5-minute time to live (TTL).
 
 The algorithm is pinned in the verifier. Accepting the `alg` header from the token is the classic JWT vulnerability — it permits `alg: none` and the HMAC-with-the-public-key confusion attack. The verifier accepts `EdDSA` and nothing else, and `iss` and `aud` are validated on every request so a token minted for another environment cannot be replayed into production.
 
@@ -85,7 +97,11 @@ The algorithm is pinned in the verifier. Accepting the `alg` header from the tok
 | Refresh reuse detected | Entire token family revoked, user notified | Immediate |
 | Access token simply expires | Natural expiry | ≤ 15 min |
 
-The denylist is small by construction — it holds only explicitly revoked, still-unexpired `jti` values, each self-expiring. **If Redis is unavailable the system fails open on the denylist specifically**, accepting tokens that are otherwise cryptographically valid and unexpired. This is a deliberate, narrow exception to fail-closed: the alternative is that a cache outage logs out every user simultaneously, which is a self-inflicted total outage. The exposure is bounded to 15 minutes for the small set of explicitly revoked tokens, the `token_version` check still runs against PostgreSQL, and the condition is alerted on. Every other authorization decision fails closed.
+The denylist is small by construction — it holds only explicitly revoked, still-unexpired `jti` values, each self-expiring. **If Redis is unavailable the system fails open on the denylist specifically**, accepting tokens that are otherwise cryptographically valid and unexpired.
+
+This is a deliberate, narrow exception to fail-closed: the alternative is that a cache outage logs out every user simultaneously, which is a self-inflicted total outage.
+
+The exposure is bounded to 15 minutes for the small set of explicitly revoked tokens, the `token_version` check still runs against PostgreSQL, and the condition is alerted on. Every other authorization decision fails closed.
 
 ---
 
@@ -127,7 +143,9 @@ No single layer is trusted. The most valuable of these is repository scoping, be
 
 ### Least privilege at the database
 
-The application connects as a role with `SELECT`/`INSERT`/`UPDATE`/`DELETE` on business tables, `INSERT`/`SELECT` only on `audit_log` (append-only: the application **cannot** update or delete audit rows, so an application-level compromise cannot erase its own tracks), no DDL, and no superuser. Migrations run as a separate role in a separate pipeline step.
+The application connects as a role with `SELECT`/`INSERT`/`UPDATE`/`DELETE` on business tables, `INSERT`/`SELECT` only on `audit_log` (append-only: the application **cannot** update or delete audit rows, so an application-level compromise cannot erase its own tracks), no database structure change (DDL), and no superuser.
+
+Migrations run as a separate role in a separate pipeline step.
 
 ---
 
@@ -142,8 +160,8 @@ Validation is at the boundary, and it is strict by default.
 | Type coercion | Strict mode: `"5"` is not accepted for an integer field |
 | Size limits | 1 MB body at the edge and in the application; per-field length caps |
 | Enums | Closed enums; arbitrary strings never reach the database |
-| UUIDs | Parsed and validated before any query |
-| Timestamps | RFC 3339 with an explicit offset; naive datetimes rejected |
+| unique identifiers (UUIDs) | Parsed and validated before any query |
+| Timestamps | Request for Comments (RFC) 3339 with an explicit offset; naive datetimes rejected |
 
 **Rejecting unknown fields matters more than it sounds.** Silently ignoring `{"owner_id": "<someone-else>"}` hides the fact that a client is attempting mass assignment. Rejecting it turns a silent probe into a logged, alertable `422`.
 
@@ -154,8 +172,8 @@ Validation is at the boundary, and it is strict by default.
 | SQL injection | SQLAlchemy parameterised queries only. Raw SQL requires a bound `text()` construct and review; string-interpolated SQL is blocked by a lint rule in CI |
 | Sort/filter injection | Whitelisted column mapping; a client string never becomes a SQL identifier |
 | NoSQL / command injection | No NoSQL store; no shell invocation with user input |
-| Stored XSS | Output is JSON with correct content types; `X-Content-Type-Options: nosniff`; escaping is the client's responsibility but the API never emits user content into an HTML context |
-| SSRF | No user-supplied URL is fetched in v1. When webhooks arrive: allowlisted schemes, DNS re-resolution with private-range blocking, no redirect following, egress through a proxy |
+| Stored cross-site scripting (XSS) | Output is JavaScript Object Notation (JSON) with correct content types; `X-Content-Type-Options: nosniff`; escaping is the client's responsibility but the API never emits user content into an HTML context |
+| SSRF | No user-supplied web address (URL) is fetched in v1. When webhooks arrive: allowlisted schemes, Domain Name System (DNS) re-resolution with private-range blocking, no redirect following, egress through a proxy |
 | Header injection | Newlines stripped from any user value that reaches a header |
 | Log injection | Structured logging: user values are JSON-encoded *fields*, never concatenated into a message string |
 
@@ -169,7 +187,7 @@ Validation is at the boundary, and it is strict by default.
 | JWT signing keys | Secrets manager | 90 days, overlapping |
 | Email provider API key | Secrets manager | 90 days |
 | Redis auth token | Secrets manager | 90 days |
-| Encryption keys | Cloud KMS, never exported | Annual, with re-wrapping |
+| Encryption keys | Cloud Key Management Service (KMS), never exported | Annual, with re-wrapping |
 
 Rules: no secret in source control, ever; no secret in an image layer or a task-definition environment variable; secrets fetched at boot over an authenticated channel and cached in memory with a TTL, so a secrets-manager blip does not crash healthy pods; secrets never logged — the logging pipeline runs a redaction filter over known key names as a backstop; separate secrets per environment, with no production access from developer machines.
 
@@ -179,7 +197,7 @@ Rules: no secret in source control, ever; no secret in an image layer or a task-
 
 ## 8. Transport and Headers
 
-TLS 1.3 minimum (1.2 permitted only with AEAD ciphers), HSTS with `max-age=31536000; includeSubDomains; preload`, certificates rotated automatically, and TLS re-encryption between the load balancer and the application so traffic is not plaintext inside the VPC.
+Transport Layer Security (TLS) 1.3 minimum (1.2 permitted only with AEAD ciphers), HTTP Strict Transport Security (HSTS) with `max-age=31536000; includeSubDomains; preload`, certificates rotated automatically, and TLS re-encryption between the load balancer and the application so traffic is not plaintext inside the virtual private cloud (VPC).
 
 | Header | Value | Purpose |
 |---|---|---|
@@ -190,19 +208,19 @@ TLS 1.3 minimum (1.2 permitted only with AEAD ciphers), HSTS with `max-age=31536
 | `Referrer-Policy` | `strict-origin-when-cross-origin` | Prevents URL leakage |
 | `Cache-Control` | `no-store` on authenticated responses | Keeps user data out of intermediary caches |
 
-**CORS is an explicit allowlist of origins** with `allow_credentials=True`. Wildcard origins are prohibited, and the combination of `*` with credentials is rejected by the browser anyway. Preflight results are cached for 10 minutes.
+**cross-origin resource sharing (CORS) is an explicit allowlist of origins** with `allow_credentials=True`. Wildcard origins are prohibited, and the combination of `*` with credentials is rejected by the browser anyway. Preflight results are cached for 10 minutes.
 
 ---
 
 ## 9. Abuse Protection
 
-Beyond the rate limits in [API Design §6](API_DESIGN.md#6-rate-limiting):
+Beyond the rate limits in [API Design section 6](API_DESIGN.md#6-rate-limiting):
 
 | Vector | Control |
 |---|---|
-| Automated registration | Per-IP limits, disposable-domain blocklist, mandatory email verification, CAPTCHA triggered only on anomalous rates rather than for every user |
+| Automated registration | Per-Internet Protocol address (IP) limits, disposable-domain blocklist, mandatory email verification, CAPTCHA triggered only on anomalous rates rather than for every user |
 | Credential stuffing | Per-IP *and* per-account counters, breach-corpus rejection at registration, alerting on distributed low-and-slow patterns |
-| Enumeration | Uniform registration responses, constant-time login paths, UUIDv7 identifiers, `404` for unauthorized objects |
+| Enumeration | Uniform registration responses, constant-time login paths, time-sorted unique identifier (UUIDv7) identifiers, `404` for unauthorized objects |
 | Resource exhaustion | Per-user task quota, bounded page sizes, statement timeouts, connection-pool limits, capped request bodies |
 | Expensive-query abuse | Whitelisted sorts, mandatory indexed filters, a 5-second statement timeout as the backstop |
 | Password-reset flooding | 3/hour per account, single-use tokens, 15-minute expiry |
@@ -217,17 +235,19 @@ Beyond the rate limits in [API Design §6](API_DESIGN.md#6-rate-limiting):
 | Password | Secret | Argon2id hash, never recoverable | TLS | **Never** | Lifetime of account |
 | Refresh token | Secret | SHA-256 hash | TLS + `HttpOnly` cookie | **Never** | 30 days |
 | Reset / verification token | Secret | SHA-256 hash | TLS | **Never** | 15 min / 24 h |
-| Email address | PII | AES-256 volume encryption | TLS | Masked: `a***@example.com` | Lifetime of account |
+| Email address | personally identifiable information (PII) | AES-256 volume encryption | TLS | Masked: `a***@example.com` | Lifetime of account |
 | Display name | PII | AES-256 | TLS | User ID only | Lifetime of account |
 | Task title / description | User content | AES-256 | TLS | **Never** — ID only | Until deleted + 30 days |
-| IP address | PII under GDPR | AES-256 | TLS | Truncated last octet | 90 days |
+| IP address | PII under General Data Protection Regulation (GDPR) | AES-256 | TLS | Truncated last octet | 90 days |
 | Audit log | Security record | AES-256 | TLS | n/a | 1 year hot, 7 years archived |
 
 **Task content never appears in logs.** Log a task ID, never a title. Titles routinely contain exactly what should not be in an observability pipeline — customer names, deal values, medical appointments. The logging layer enforces this with a field allowlist on domain objects rather than relying on developers to remember.
 
 ### GDPR posture
 
-Right of access is served by a self-service data export; right to erasure by a genuine hard-delete job that removes tasks and credentials and pseudonymises the subject identifier in the audit log while preserving the integrity of the audit trail itself. Data minimisation means the system collects email, display name and password and nothing else. Retention is enforced by scheduled jobs, not by policy documents — an unenforced retention policy is not a control.
+Right of access is served by a self-service data export; right to erasure by a genuine hard-delete job that removes tasks and credentials and pseudonymises the subject identifier in the audit log while preserving the integrity of the audit trail itself.
+
+Data minimisation means the system collects email, display name and password and nothing else. Retention is enforced by scheduled jobs, not by policy documents — an unenforced retention policy is not a control.
 
 ---
 
@@ -244,7 +264,7 @@ Right of access is served by a self-service data export; right to erasure by a g
 | API7 Server side request forgery | Not applicable in v1 | No user-supplied URL is fetched; controls specified for webhooks |
 | API8 Security misconfiguration | Addressed | IaC-only changes, hardened headers, no debug in production, least-privilege IAM, config validated at boot |
 | API9 Improper inventory management | Addressed | Generated OpenAPI, versioned endpoints, per-version usage metrics, documented deprecation |
-| API10 Unsafe consumption of third-party APIs | Addressed | Provider responses validated, timeouts, circuit breakers, no implicit trust |
+| API10 Unsafe consumption of third-party application programming interfaces (APIs) | Addressed | Provider responses validated, timeouts, circuit breakers, no implicit trust |
 
 ---
 
@@ -252,8 +272,8 @@ Right of access is served by a self-service data export; right to erasure by a g
 
 | Control | Why not now | Trigger to add it |
 |---|---|---|
-| MFA / TOTP | Real value, but meaningful cost in enrolment, recovery flows and support. Password strength plus breach checking plus rotation covers the dominant threat first | Enterprise customers, or any privileged-account requirement. **I would make it mandatory for admins before general availability** |
-| SSO / OIDC federation | No stated requirement; the token design keeps the seam clean | First enterprise customer |
+| multi-factor authentication (MFA) / time-based one-time password (TOTP) | Real value, but meaningful cost in enrolment, recovery flows and support. Password strength plus breach checking plus rotation covers the dominant threat first | Enterprise customers, or any privileged-account requirement. **I would make it mandatory for admins before general availability** |
+| single sign-on (SSO) / OpenID Connect (OIDC) federation | No stated requirement; the token design keeps the seam clean | First enterprise customer |
 | Field-level encryption of task content | Volume encryption plus least-privilege access is proportionate for a task tracker. Field-level encryption breaks search and adds key-management burden | Regulated or genuinely sensitive content |
 | HSM-backed signing keys | KMS is sufficient at this scale | Compliance requirement |
 | Full anomaly-detection platform | Requires a behavioural baseline that does not yet exist | Once there is 3+ months of production traffic to learn from |
@@ -270,7 +290,7 @@ Listing these is the point. A security architecture that claims to have covered 
 | Detect | Alerts on authorization-denial spikes, refresh-reuse events, privilege changes, login-failure anomalies, egress-volume anomalies |
 | Contain | Suspend accounts and increment `token_version`; revoke token families; rotate keys; WAF rule at the edge; feature-flag the affected path off |
 | Investigate | Correlation ID reconstructs the full request path; the append-only audit log reconstructs the sequence of state changes; the application cannot have altered it |
-| Recover | PITR for data corruption; forced re-authentication; credential rotation |
+| Recover | point-in-time recovery (PITR) for data corruption; forced re-authentication; credential rotation |
 | Learn | Blameless post-mortem, a regression test for the specific failure, control updated |
 
 **Deliberate design for forensics.** The correlation ID and the append-only audit log exist so that the question "what exactly did this actor do?" has a definitive answer. Most incident response is slow not because containment is hard but because nobody can establish what happened. The audit log is written in the same transaction as every state change, and the application's database role has no `UPDATE` or `DELETE` on it.

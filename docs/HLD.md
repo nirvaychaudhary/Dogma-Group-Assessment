@@ -1,5 +1,7 @@
 # High-Level Design — Task Management Platform
 
+Short forms are written out the first time they appear. The full list is in the [glossary](GLOSSARY.md).
+
 > **Audience:** engineers and reviewers who need to understand the shape of the system in ~15 minutes.
 > **Companion documents:** [System Design](SYSTEM_DESIGN.md) (flows), [Data Architecture](DATA_ARCHITECTURE.md) (schema), [Security](SECURITY.md), [Scalability](SCALABILITY.md), [Availability](AVAILABILITY.md), [Observability](OBSERVABILITY.md).
 
@@ -14,7 +16,7 @@ Build the backend for a Task Management Platform that supports:
 - Task creation, retrieval, update and deletion
 - Users may only act on **their own** tasks
 - Administrators may act on tasks **across all users**
-- All APIs are secured
+- All application programming interfaces (APIs) are secured
 
 The deliverable is the architecture. The design below is what I would actually build and operate, not a maximal architecture.
 
@@ -27,28 +29,28 @@ Architecture is meaningless without a target. Every decision in this repository 
 | Dimension | Year-1 baseline | Design headroom | Notes |
 |---|---|---|---|
 | Registered users | 50,000 | 500,000 | Small relative to modern hardware |
-| Daily active users | 5,000 | 50,000 | ~10% DAU/MAU is typical for productivity tools |
+| Daily active users | 5,000 | 50,000 | ~10% of monthly users are active on a given day for productivity tools |
 | Peak request rate | 150 req/s | 1,500 req/s | Bursty: weekday mornings, standup times |
 | Tasks stored | ~2 million | ~50 million | Well inside a single PostgreSQL instance |
-| Tasks per user (p99) | ~2,000 | ~20,000 | Drives the pagination decision |
+| Tasks per user, 99th percentile | ~2,000 | ~20,000 | Drives the pagination decision |
 | Read : write ratio | ~8 : 1 | — | Read-heavy, but not read-*dominated* |
 | Payload size | < 8 KB | — | No file/attachment handling in v1 |
 
 **Service level objectives (SLOs)** — these are the contract the architecture is designed to meet:
 
-| SLO | Target |
+| service level objective (SLO) | Target |
 |---|---|
-| Availability (monthly, API 5xx-based) | 99.9% (~43 min error budget/month) |
-| Latency, authenticated reads | p95 < 200 ms, p99 < 500 ms |
+| Monthly availability, based on server errors | 99.9% (~43 min error budget/month) |
+| Latency, authenticated reads | 95th percentile (p95) < 200 ms, p99 < 500 ms |
 | Latency, writes | p95 < 400 ms, p99 < 800 ms |
-| Recovery Point Objective (RPO) | ≤ 5 minutes |
-| Recovery Time Objective (RTO) | ≤ 30 minutes |
+| Recovery point objective (RPO) | ≤ 5 minutes |
+| Recovery time objective (RTO) | ≤ 30 minutes |
 
 **Constraints**
 
-- Single-region deployment in v1. Multi-region is an explicit non-goal (see §13).
+- Single-region deployment in v1. Multi-region is an explicit non-goal (see section 13).
 - Small team (2–4 backend engineers). Operational surface area is a first-class cost.
-- No hard regulatory regime assumed beyond GDPR-style data subject rights.
+- No hard regulatory regime assumed beyond General Data Protection Regulation (GDPR)-style data subject rights.
 
 **Non-functional priorities, in order:** correctness of authorization → data integrity → availability → latency → cost → feature velocity. Where two goals conflict, the earlier one wins. This ordering is why, for example, the design accepts a slightly slower write path in exchange for a durable audit trail.
 
@@ -70,7 +72,11 @@ Microservices solve organisational scaling and independent-failure-domain proble
 
 ### Why not a plain layered monolith
 
-An unpartitioned monolith decays. The mitigation is cheap and mechanical: enforce module boundaries in CI (see [Development Practices](DEVELOPMENT_PRACTICES.md#7-enforcing-architecture-in-ci)) so `modules.tasks` may not import `modules.identity.repository`, only `modules.identity`'s published interface. The boundaries are real from day one even though the deployment artefact is single.
+An unpartitioned monolith decays.
+
+The mitigation is cheap and mechanical: enforce module boundaries in CI (see [Development Practices](DEVELOPMENT_PRACTICES.md#7-enforcing-architecture-in-ci)) so `modules.tasks` may not import `modules.identity.repository`, only `modules.identity`'s published interface.
+
+The boundaries are real from day one even though the deployment artefact is single.
 
 ### The extraction path
 
@@ -88,86 +94,24 @@ The modular monolith is designed so that the *first* service to be extracted is 
 
 ```mermaid
 flowchart TB
-    subgraph client["Client Layer"]
-        WEB["Web SPA"]
-        MOB["Mobile App"]
-        CLI["Service / CI clients"]
-    end
+    person[Web app, mobile app, and other clients]
+    edge[Content delivery network and firewall]
+    balancer[Load balancer]
+    app[Application servers]
+    allow[Permission check]
+    rules[Business rules]
+    database[(Main database)]
+    temp[(Temporary store)]
+    worker[Background workers]
+    mail[Email service]
 
-    subgraph edge["Edge Layer"]
-        CDN["CDN + WAF<br/>TLS termination, OWASP rules,<br/>IP reputation, L7 DDoS"]
-        ALB["Load Balancer<br/>health checks, TLS re-encrypt,<br/>round-robin across AZs"]
-    end
-
-    subgraph app["Application Layer — stateless replicas"]
-        direction TB
-        MW["Middleware pipeline<br/>correlation ID, authn, rate limit,<br/>request logging, error mapping"]
-        API["API / Interface layer<br/>FastAPI routers, Pydantic schemas"]
-        POL["Authorization policy engine<br/>single decision point"]
-        SVC["Application services<br/>use cases, transaction boundaries"]
-        DOM["Domain layer<br/>entities, invariants, state machine"]
-        REPO["Repository layer<br/>SQLAlchemy, unit of work"]
-    end
-
-    subgraph async["Asynchronous Processing"]
-        Q["Job queue<br/>Redis + arq"]
-        WRK["Worker pool<br/>email, audit rollup, cleanup"]
-        OBX["Outbox dispatcher"]
-    end
-
-    subgraph data["Data Layer"]
-        PG[("PostgreSQL 16<br/>primary + sync standby<br/>system of record")]
-        RO[("Read replica<br/>added at Stage 2")]
-        RDS[("Redis<br/>rate limits, token denylist,<br/>queue, hot lookups")]
-        OBJ[("Object storage<br/>audit archive, DB backups")]
-    end
-
-    subgraph ext["External Services"]
-        MAIL["Transactional email<br/>verification, password reset"]
-        SEC["Secrets manager"]
-        IDP["OIDC provider<br/>deferred — see Security §12"]
-    end
-
-    subgraph obs["Observability"]
-        OTEL["OpenTelemetry Collector"]
-        LOGS["Log aggregation"]
-        MET["Metrics + dashboards"]
-        TRC["Distributed tracing"]
-        ALRT["Alerting + on-call"]
-    end
-
-    WEB --> CDN
-    MOB --> CDN
-    CLI --> CDN
-    CDN --> ALB
-    ALB --> MW
-    MW --> API
-    API --> POL
-    POL --> SVC
-    SVC --> DOM
-    SVC --> REPO
-    REPO --> PG
-    REPO -.->|"read-only queries"| RO
-    MW --> RDS
-    SVC --> RDS
-    SVC -->|"enqueue in same tx"| OBX
-    OBX --> Q
-    Q --> WRK
-    WRK --> PG
-    WRK --> MAIL
-    PG -->|"streaming replication"| RO
-    PG -->|"WAL archive + snapshots"| OBJ
-    app --> SEC
-    app --> OTEL
-    WRK --> OTEL
-    OTEL --> LOGS
-    OTEL --> MET
-    OTEL --> TRC
-    MET --> ALRT
-    LOGS --> ALRT
+    person --> edge --> balancer --> app
+    app --> allow --> rules --> database
+    app --> temp
+    rules --> worker --> mail
 ```
 
-A larger, annotated version of this diagram is in [diagrams/01-high-level-architecture.md](diagrams/01-high-level-architecture.md).
+The same picture, split into three so the boxes do not sit on top of each other, is in [diagrams/01-high-level-architecture.md](diagrams/01-high-level-architecture.md).
 
 ---
 
@@ -175,12 +119,12 @@ A larger, annotated version of this diagram is in [diagrams/01-high-level-archit
 
 | Component | Responsibility | Explicitly *not* responsible for |
 |---|---|---|
-| **CDN + WAF** | TLS termination, coarse L3/L4/L7 DDoS absorption, OWASP CRS rule set, bot/IP reputation, static asset delivery | Business authorization, per-user rate limits |
-| **Load balancer** | Health-check-driven traffic distribution across AZs, connection draining, request timeouts | Any application logic |
-| **Middleware pipeline** | Correlation ID generation/propagation, JWT verification → `Principal`, per-identity rate limiting, structured access logging, exception → RFC 9457 mapping | Deciding *whether* a principal may touch a *specific* object |
-| **API layer** | HTTP concerns only: routing, deserialisation, schema validation, status codes, content negotiation, versioning | Business rules, persistence |
+| **content delivery network (CDN) + web application firewall (WAF)** | Transport Layer Security (TLS) termination, coarse L3/L4/L7 distributed denial of service (DDoS) absorption, Open Worldwide Application Security Project (OWASP) CRS rule set, bot/IP reputation, static asset delivery | Business authorization, per-user rate limits |
+| **Load balancer** | Health-check-driven traffic distribution across availability zones (AZs), connection draining, request timeouts | Any application logic |
+| **Middleware pipeline** | Correlation ID generation/propagation, JSON Web Token (JWT) verification → `Principal`, per-identity rate limiting, structured access logging, exception → Request for Comments (RFC) 9457 mapping | Deciding *whether* a principal may touch a *specific* object |
+| **API layer** | Hypertext Transfer Protocol (HTTP) concerns only: routing, deserialisation, schema validation, status codes, content negotiation, versioning | Business rules, persistence |
 | **Authorization policy engine** | The single place that answers `can(principal, action, resource)`. Both role checks and object-level ownership checks | Authentication (who you are) |
-| **Application services** | Use-case orchestration, transaction boundaries, idempotency, audit emission, outbox writes | HTTP, SQL dialect |
+| **Application services** | Use-case orchestration, transaction boundaries, idempotency, audit emission, outbox writes | HTTP, Structured Query Language (SQL) dialect |
 | **Domain layer** | Entities, value objects, invariants, the task status state machine. Pure Python, no I/O | Anything requiring a database or network |
 | **Repository layer** | Query construction, mapping, unit of work, optimistic locking | Business decisions |
 | **Job queue + workers** | Anything that must not block an HTTP response: email delivery, audit archival, soft-delete purging, token cleanup | Anything a user waits on synchronously |
@@ -205,24 +149,23 @@ So authorization is a named architectural component, not a decorator convention:
 The order of the middleware pipeline is itself a design decision — cheap and security-critical work happens before expensive work, so that a hostile request is rejected as early as possible.
 
 ```mermaid
-flowchart LR
-    A["Request"] --> B["1. Correlation ID<br/>accept or mint"]
-    B --> C["2. Body size +<br/>content-type guard"]
-    C --> D["3. Coarse IP<br/>rate limit"]
-    D --> E["4. Authenticate<br/>verify JWT signature,<br/>exp, iss, aud, jti"]
-    E --> F["5. Per-identity<br/>rate limit"]
-    F --> G["6. Route + schema<br/>validation"]
-    G --> H["7. Authorize<br/>role + object level"]
-    H --> I["8. Service<br/>begin transaction"]
-    I --> J["9. Domain invariants"]
-    J --> K["10. Persist + audit +<br/>outbox, one commit"]
-    K --> L["11. Serialise response<br/>ETag, cache headers"]
-    L --> M["12. Access log<br/>+ metrics + span"]
+flowchart TB
+    one[1. Give the request a tracking number]
+    two[2. Reject oversized requests]
+    three[3. Limit repeats from one network address]
+    four[4. Confirm who is calling]
+    five[5. Limit repeats from that person]
+    six[6. Check the shape of the input]
+    seven[7. Check permission for this task]
+    eight[8. Save the change and the history together]
+    nine[9. Send the answer]
+
+    one --> two --> three --> four --> five --> six --> seven --> eight --> nine
 ```
 
 Two details that matter:
 
-- **Rate limiting is split** into a coarse pre-auth IP limit (cheap, protects the JWT verification path itself from being a DoS amplifier) and a fine post-auth per-identity limit (accurate, fair). Doing only the latter means an attacker with no token can still force signature verification work.
+- **Rate limiting is split** into a coarse pre-auth Internet Protocol address (IP) limit (cheap, protects the JWT verification path itself from being a DoS amplifier) and a fine post-auth per-identity limit (accurate, fair). Doing only the latter means an attacker with no token can still force signature verification work.
 - **Audit record, domain mutation, and outbox event are written in the same transaction.** This is the core integrity guarantee: it is impossible for a task to change without a corresponding audit row, and impossible for a notification to be queued for a change that rolled back.
 
 ---
@@ -232,7 +175,7 @@ Two details that matter:
 | Concern | Where enforced | Why there |
 |---|---|---|
 | Is the token valid? | Middleware | Stateless, uniform, no per-route code |
-| Is the token revoked? | Middleware, Redis denylist lookup | Needs shared state; see [Security §4](SECURITY.md#4-token-revocation) |
+| Is the token revoked? | Middleware, Redis denylist lookup | Needs shared state; see [Security section 4](SECURITY.md#4-token-revocation) |
 | Is this role allowed this *action*? | Policy engine, called from service | Keeps HTTP layer free of business rules |
 | May this principal touch this *object*? | Policy engine + repository query scoping | Defence in depth: query narrowing **and** explicit check |
 | Is this state transition legal? | Domain layer | It is an invariant, not a permission |
@@ -276,8 +219,8 @@ Redis (not SQS/RabbitMQ) is the v1 broker because it is already in the stack for
 | Integration | Purpose | Failure containment |
 |---|---|---|
 | Transactional email provider | Verification, password reset, admin notifications | Async only, behind an adapter interface, retried with exponential backoff and jitter, circuit breaker, dead-letter queue. A provider outage degrades onboarding, never core task operations |
-| Secrets manager | DB credentials, JWT signing keys, provider API keys | Fetched at boot and cached in memory with TTL, so a control-plane blip does not crash healthy pods |
-| OIDC / SSO provider | Enterprise sign-in | Deliberately deferred; the token design keeps the path open — see [Security §12](SECURITY.md#12-what-i-deliberately-did-not-build) |
+| Secrets manager | DB credentials, JWT signing keys, provider API keys | Fetched at boot and cached in memory with time to live (TTL), so a control-plane blip does not crash healthy pods |
+| OpenID Connect (OIDC) / single sign-on (SSO) provider | Enterprise sign-in | Deliberately deferred; the token design keeps the path open — see [Security section 12](SECURITY.md#12-what-i-deliberately-did-not-build) |
 
 Every external dependency sits behind a port defined in our own domain terms (an anti-corruption layer). This is not ceremony: it is what makes the provider swappable and, more importantly, what makes it trivially fakeable in tests so the test suite never touches the network.
 
@@ -285,18 +228,18 @@ Every external dependency sits behind a port defined in our own domain terms (an
 
 ## 11. Infrastructure View
 
-Reference deployment is AWS; see [diagrams/04-deployment-view.md](diagrams/04-deployment-view.md) for the full topology and the GCP/Azure equivalents.
+Reference deployment is Amazon Web Services (AWS); see [diagrams/04-deployment-view.md](diagrams/04-deployment-view.md) for the full topology and the GCP/Azure equivalents.
 
 | Concern | Choice | Reasoning |
 |---|---|---|
-| Compute | ECS Fargate, ≥ 2 tasks across ≥ 2 AZs | Containers give environment parity; Fargate removes node management for a small team. **Kubernetes is not justified at this scale** — it is a platform to operate, and we would be paying for control-plane complexity we cannot yet amortise |
-| Ingress | CloudFront + AWS WAF → ALB | Absorbs volumetric attacks before they reach compute |
-| Database | RDS PostgreSQL 16, Multi-AZ | Synchronous standby gives automatic failover; managed backups and PITR meet the 5-minute RPO |
+| Compute | Elastic Container Service (ECS) Fargate, ≥ 2 tasks across ≥ 2 AZs | Containers give environment parity; Fargate removes node management for a small team. **Kubernetes is not justified at this scale** — it is a platform to operate, and we would be paying for control-plane complexity we cannot yet amortise |
+| Ingress | CloudFront + AWS WAF → Application Load Balancer (ALB) | Absorbs volumetric attacks before they reach compute |
+| Database | Relational Database Service (RDS) PostgreSQL 16, Multi-availability zone (AZ) | Synchronous standby gives automatic failover; managed backups and point-in-time recovery (PITR) meet the 5-minute RPO |
 | Cache/queue | ElastiCache Redis, Multi-AZ with automatic failover | Managed, same reasoning |
 | Secrets | AWS Secrets Manager with rotation | Never in environment variables baked into images |
 | Artifacts | ECR with image scanning and immutable tags | Supply-chain hygiene |
 
-**On portability:** the design is deliberately built on commodity primitives — containers, a load balancer, managed PostgreSQL, managed Redis, object storage, OpenTelemetry. Every one has a direct equivalent on GCP and Azure. I have avoided proprietary services (Lambda-centric design, DynamoDB, Cognito) whose data or programming models would be genuinely hard to unwind. The lock-in that remains is operational, not architectural.
+**On portability:** the design is deliberately built on commodity primitives — containers, a load balancer, managed PostgreSQL, managed Redis, object storage, OpenTelemetry. Every one has a direct equivalent on Google Cloud Platform (GCP) and Azure. I have avoided proprietary services (Lambda-centric design, DynamoDB, Cognito) whose data or programming models would be genuinely hard to unwind. The lock-in that remains is operational, not architectural.
 
 ---
 
@@ -306,8 +249,8 @@ Full detail in [Observability](OBSERVABILITY.md). The architectural commitment i
 
 Three pillars, one vocabulary:
 
-- **Logs** — structured JSON, no PII in message bodies, `correlation_id` + `user_id` + `route` on every record.
-- **Metrics** — RED (rate, errors, duration) per route, USE for infrastructure, plus business and security counters such as `auth_failures_total` and `authz_denials_total`. Authorization denials are a *security signal*: a sudden spike means someone is enumerating object IDs.
+- **Logs** — structured JavaScript Object Notation (JSON), no personally identifiable information (PII) in message bodies, `correlation_id` + `user_id` + `route` on every record.
+- **Metrics** — rate, errors, and duration (RED) (rate, errors, duration) per route, utilization, saturation, and errors (USE) for infrastructure, plus business and security counters such as `auth_failures_total` and `authz_denials_total`. Authorization denials are a *security signal*: a sudden spike means someone is enumerating object IDs.
 - **Traces** — OpenTelemetry auto-instrumentation for HTTP, SQLAlchemy, Redis, and the worker, with trace context propagated through the outbox so an email send links back to the API request that caused it.
 
 ---
@@ -331,12 +274,12 @@ Stating what a design excludes is as informative as stating what it includes. Th
 
 | Not built | Why not | When I would revisit |
 |---|---|---|
-| Microservices | No organisational or scaling driver. See §3 | Team > ~15 engineers, or genuinely divergent scaling profiles |
+| Microservices | No organisational or scaling driver. See section 3 | Team > ~15 engineers, or genuinely divergent scaling profiles |
 | Kubernetes | Operational cost exceeds benefit for a 2–4 person team | Multiple heterogeneous services, or a platform team exists |
 | Multi-region active-active | Cross-region write consistency is a large problem; 99.9% does not need it | A hard 99.99% target, or data-residency requirements |
-| CQRS / event sourcing | The domain has no complex read-model or temporal-query requirement; the audit log already answers "what happened" | Complex analytics or regulatory replay requirements |
-| GraphQL | Two client types with predictable needs; REST's cacheability and simpler authorization story win | Many clients with highly divergent shapes |
-| Caching task lists | Write-heavy per-user data with poor cache-hit characteristics and a real risk of serving another user's cached page. See [Scalability §5](SCALABILITY.md#5-caching) | Measured read amplification on genuinely shared data |
+| command and query separation (CQRS) / event sourcing | The domain has no complex read-model or temporal-query requirement; the audit log already answers "what happened" | Complex analytics or regulatory replay requirements |
+| GraphQL | Two client types with predictable needs; Representational State Transfer (REST)'s cacheability and simpler authorization story win | Many clients with highly divergent shapes |
+| Caching task lists | Write-heavy per-user data with poor cache-hit characteristics and a real risk of serving another user's cached page. See [Scalability section 5](SCALABILITY.md#5-caching) | Measured read amplification on genuinely shared data |
 | Full-text search engine | PostgreSQL `tsvector` + trigram indexes comfortably cover 50M rows | Relevance ranking or faceted search becomes a product requirement |
 
-The unifying principle: **introduce infrastructure when a measured signal demands it, and know in advance what that signal is.** [Scalability §2](SCALABILITY.md#2-the-evolution-path) states the numeric trigger for each of these.
+The unifying principle: **introduce infrastructure when a measured signal demands it, and know in advance what that signal is.** [Scalability section 2](SCALABILITY.md#2-the-evolution-path) states the numeric trigger for each of these.

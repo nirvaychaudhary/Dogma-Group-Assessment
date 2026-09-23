@@ -1,5 +1,7 @@
 # Data Architecture
 
+Short forms are written out the first time they appear. The full list is in the [glossary](GLOSSARY.md).
+
 ## 1. Technology Choice: PostgreSQL 16
 
 **Decision: a single relational database as the system of record.**
@@ -17,7 +19,7 @@ The reasoning is specific to this workload rather than general preference:
 |---|---|
 | MongoDB | The flexible schema is a liability when the schema is well known and stability is the goal. Referential integrity and cross-document transactions would move to application code |
 | DynamoDB | Excellent at known single-key access patterns, hostile to the ad-hoc multi-field filtering admins need. Would require several GSIs and still not answer arbitrary queries. Also the deepest cloud lock-in available |
-| MySQL | A genuinely reasonable choice. PostgreSQL wins on richer types (`JSONB`, arrays, `citext`), partial and expression indexes, `EXCLUDE` constraints, transactional DDL, and stronger default isolation semantics |
+| MySQL | A genuinely reasonable choice. PostgreSQL wins on richer types (`JSONB`, arrays, `citext`), partial and expression indexes, `EXCLUDE` constraints, transactional database structure change (DDL), and stronger default isolation semantics |
 | PostgreSQL + a separate document store | Two consistency models and two operational surfaces for no requirement that demands it |
 
 `JSONB` columns are used narrowly — audit diffs and outbox payloads — where the shape is genuinely variable. Business fields that are queried or constrained are real columns. `JSONB` for core entity data would mean losing constraints, type safety and index quality in exchange for a schema flexibility that stable domain entities do not need.
@@ -27,122 +29,49 @@ The reasoning is specific to this workload rather than general preference:
 ## 2. Entity Relationship Model
 
 ```mermaid
-erDiagram
-    USERS ||--o{ TASKS : "owns"
-    USERS ||--o{ REFRESH_TOKENS : "holds"
-    USERS ||--o{ AUDIT_LOG : "acts in"
-    USERS ||--o{ EMAIL_TOKENS : "verifies with"
-    USERS ||--o{ IDEMPOTENCY_KEYS : "scopes"
-    TASKS ||--o{ AUDIT_LOG : "is subject of"
+flowchart TB
+    user[User account]
+    task[Task]
+    refresh[Refresh token]
+    email[Email token]
+    audit[Audit history]
+    key[Idempotency key]
+    outbox[Outbox event]
 
-    USERS {
-        uuid id PK "UUIDv7"
-        citext email UK "case-insensitive unique"
-        text password_hash "Argon2id"
-        text display_name
-        user_role role "user | admin"
-        user_status status "pending | active | suspended | deleted"
-        int token_version "bumped to revoke all tokens"
-        timestamptz email_verified_at
-        timestamptz last_login_at
-        timestamptz created_at
-        timestamptz updated_at
-        timestamptz deleted_at
-    }
-
-    TASKS {
-        uuid id PK "UUIDv7"
-        uuid owner_id FK "NOT NULL, ON DELETE CASCADE"
-        text title "1-200 chars, CHECK"
-        text description "max 10000, nullable"
-        task_status status "todo | in_progress | done"
-        task_priority priority "low | medium | high"
-        timestamptz due_at "nullable"
-        text_array tags "max 10"
-        int version "optimistic lock, starts at 1"
-        timestamptz completed_at "set when status becomes done"
-        timestamptz created_at
-        timestamptz updated_at
-        timestamptz deleted_at "soft delete"
-        uuid deleted_by FK "nullable"
-    }
-
-    REFRESH_TOKENS {
-        uuid id PK
-        uuid user_id FK "ON DELETE CASCADE"
-        bytea token_hash UK "SHA-256"
-        uuid family_id "rotation lineage"
-        uuid replaced_by FK "nullable, self-reference"
-        timestamptz expires_at
-        timestamptz revoked_at "nullable"
-        text revoked_reason
-        inet ip_address
-        text user_agent
-        timestamptz created_at
-    }
-
-    AUDIT_LOG {
-        bigint id PK "monthly partitions"
-        uuid actor_id FK "nullable for system actions"
-        user_role actor_role
-        text action "e.g. task.updated"
-        text resource_type
-        uuid resource_id
-        uuid target_user_id "for cross-user actions"
-        jsonb changes "before/after diff"
-        jsonb context "filters, result counts"
-        audit_severity severity "info | notice | high | critical"
-        text correlation_id
-        inet ip_address
-        timestamptz occurred_at
-    }
-
-    EMAIL_TOKENS {
-        uuid id PK
-        uuid user_id FK "ON DELETE CASCADE"
-        bytea token_hash UK "SHA-256"
-        token_purpose purpose "verify_email | reset_password"
-        timestamptz expires_at
-        timestamptz consumed_at "single use"
-        timestamptz created_at
-    }
-
-    IDEMPOTENCY_KEYS {
-        text key PK "composite with user_id"
-        uuid user_id PK
-        text request_fingerprint "SHA-256 of body"
-        idem_status status "in_progress | completed"
-        int response_status
-        jsonb response_body
-        timestamptz expires_at
-        timestamptz created_at
-    }
-
-    OUTBOX_EVENTS {
-        uuid id PK
-        text event_type
-        jsonb payload
-        text correlation_id "trace continuity"
-        timestamptz published_at "nullable"
-        int attempts
-        timestamptz next_attempt_at
-        timestamptz created_at
-    }
+    user --> task
+    user --> refresh
+    user --> email
+    user --> audit
+    user --> key
+    user --> outbox
+    task --> audit
 ```
+
+A user owns tasks, tokens, and history. A task is also mentioned in the history. The fields below are the ones that carry rules.
+
+| Record | Important fields | Why they exist |
+|---|---|---|
+| User account | Email, password hash, role, status, token version | One person, one address. The token version lets us sign every device out at once |
+| Task | Owner, title, status, priority, due date, tags, version, deleted time | The owner never comes from the client. The version stops two edits from overwriting each other |
+| Refresh token | Hash of the token, family, expiry, revoked time | We store a hash, not the token. A reused token revokes the whole family |
+| Email token | Hash, purpose, expiry, used time | Verification and password-reset links work once, then die |
+| Audit history | Actor, action, before-and-after, tracking number, severity | Written in the same save as the change. The application cannot edit or delete it |
+| Idempotency key | Key, request fingerprint, stored answer | A retried create does not make a second task |
+| Outbox event | Event type, payload, published time | The follow-up email is queued only if the database save succeeds |
 
 ---
 
 ## 3. Schema Decisions That Matter
 
-### Primary keys: UUIDv7
+### Primary keys: time-sorted unique identifier (UUIDv7)
 
-Not sequential integers, not UUIDv4.
+Not sequential integers, not random unique identifier (UUIDv4).
 
 Sequential integers are enumerable. `GET /tasks/1001` after `GET /tasks/1000` turns any authorization gap into a complete data dump, and exposes business volume to anyone who registers. UUIDv4 fixes enumerability but is random, so index inserts scatter across the B-tree, causing page splits, write amplification and index bloat on a high-insert table.
 
 UUIDv7 embeds a millisecond timestamp in its high bits, so values are time-ordered. Inserts append to the right-hand edge of the index like an integer, while remaining non-enumerable. It also makes `ORDER BY id` a valid creation-order sort and gives the keyset-pagination tiebreaker a natural ordering.
 
-The cost is 16 bytes rather than 8 and a slightly less readable ID in a URL. Both are acceptable; the enumeration property is not negotiable given that object-level authorization is the system's primary risk.
+The cost is 16 bytes rather than 8 and a slightly less readable ID in a web address (URL). Both are acceptable; the enumeration property is not negotiable given that object-level authorization is the system's primary risk.
 
 ### Email: `citext` with a normalising constraint
 
@@ -150,7 +79,9 @@ Email is case-insensitive in practice. Storing it as `text` with a unique index 
 
 ### Status and role as native enums
 
-PostgreSQL `ENUM` types rather than `TEXT` with a `CHECK`, or a lookup table. The database rejects an invalid status even if application code has a bug or someone runs a manual `UPDATE`. Enums are compact and indexable. The cost is that adding a value requires `ALTER TYPE ... ADD VALUE`, which is a migration — appropriate friction for changing a domain concept, and non-blocking in PostgreSQL 12+.
+PostgreSQL `ENUM` types rather than `TEXT` with a `CHECK`, or a lookup table. The database rejects an invalid status even if application code has a bug or someone runs a manual `UPDATE`. Enums are compact and indexable.
+
+The cost is that adding a value requires `ALTER TYPE ... ADD VALUE`, which is a migration — appropriate friction for changing a domain concept, and non-blocking in PostgreSQL 12+.
 
 ### Soft delete on tasks only
 
@@ -160,11 +91,15 @@ PostgreSQL `ENUM` types rather than `TEXT` with a `CHECK`, or a lookup table. Th
 
 ### Optimistic concurrency via `version`
 
-An integer incremented on every update, surfaced as an HTTP `ETag`, checked by `UPDATE ... WHERE id = :id AND version = :expected`. A zero-row result means a concurrent writer won. See [System Design §6](SYSTEM_DESIGN.md#6-updating-a-task).
+An integer incremented on every update, surfaced as an Hypertext Transfer Protocol (HTTP) `ETag`, checked by `UPDATE ... WHERE id = :id AND version = :expected`. A zero-row result means a concurrent writer won. See [System Design section 6](SYSTEM_DESIGN.md#6-updating-a-task).
 
 ### Tags as a `TEXT[]` column
 
-A normalised `task_tags` join table is the textbook answer, and here it would be over-normalisation: tags are a bounded list of at most ten short strings, always read with their task and never queried independently. A `TEXT[]` with a GIN index handles containment queries efficiently and avoids a join on the hottest read path. If tags ever acquire their own identity — colours, per-user tag management, renaming — normalisation becomes correct, and that is a contained migration.
+A normalised `task_tags` join table is the textbook answer, and here it would be over-normalisation: tags are a bounded list of at most ten short strings, always read with their task and never queried independently.
+
+A `TEXT[]` with a GIN index handles containment queries efficiently and avoids a join on the hottest read path.
+
+If tags ever acquire their own identity — colours, per-user tag management, renaming — normalisation becomes correct, and that is a contained migration.
 
 ---
 
@@ -225,7 +160,7 @@ Indexes are designed against actual query shapes. Each one below exists because 
 
 ## 6. Transaction Boundaries
 
-**One transaction per use case, opened and committed by the application service.** Neither the API layer nor the repository layer commits. This single rule prevents the most common data-integrity failure in layered applications: a repository that commits per call, leaving a use case half-applied when a later step fails.
+**One transaction per use case, opened and committed by the application service.** Neither the application programming interface (API) layer nor the repository layer commits. This single rule prevents the most common data-integrity failure in layered applications: a repository that commits per call, leaving a use case half-applied when a later step fails.
 
 ```python
 # Illustrative — the shape of the unit of work.
@@ -253,7 +188,7 @@ async def update_task(self, principal, task_id, changes, if_match):
 | Use case | Inside the transaction | Outside |
 |---|---|---|
 | Register | User insert, verification token, audit, outbox | Email delivery, breach-corpus lookup |
-| Login | Refresh token insert, `last_login_at`, audit | Password verification (CPU-bound, no lock held), rate-limit counters |
+| Login | Refresh token insert, `last_login_at`, audit | Password verification (processor-heavy, no lock held), rate-limit counters |
 | Create task | Idempotency key, task insert, audit, outbox | Response serialisation |
 | Update task | Load, authorize, version-guarded update, audit, outbox | — |
 | Delete task | Soft-delete update, audit, outbox | Purge, which is a separate transaction later |
@@ -279,7 +214,7 @@ async def update_task(self, principal, task_id, changes, if_match):
 
 All reads and writes go to the primary by default. A user who creates a task and immediately reloads their list must see it; read-your-own-writes is a correctness requirement in a task manager, not a nicety.
 
-When read replicas are introduced ([Scalability §4](SCALABILITY.md#4-database-scaling)), routing is explicit rather than automatic:
+When read replicas are introduced ([Scalability section 4](SCALABILITY.md#4-database-scaling)), routing is explicit rather than automatic:
 
 | Query | Target | Why |
 |---|---|---|
@@ -333,13 +268,13 @@ The consistent pattern: **let the database arbitrate races through constraints, 
 | Mechanism | Frequency | Retention | Purpose |
 |---|---|---|---|
 | Automated snapshots | Daily | 30 days | Routine restore |
-| WAL archiving | Continuous | 7 days | Point-in-time recovery, ≤ 5 min RPO |
+| write-ahead log (WAL) archiving | Continuous | 7 days | Point-in-time recovery, ≤ 5 min recovery point objective (RPO) |
 | Cross-region snapshot copy | Daily | 90 days | Regional disaster |
 | Logical dump | Weekly | 90 days | Migration, and protection against physical-format corruption |
 
-**Restore drills are quarterly and timed.** An untested backup is a hypothesis, not a control — and the failure mode of an untested backup is discovering the problem during an incident. The drill restores to a scratch instance, runs schema and row-count validation, and records the elapsed time against the 30-minute RTO.
+**Restore drills are quarterly and timed.** An untested backup is a hypothesis, not a control — and the failure mode of an untested backup is discovering the problem during an incident. The drill restores to a scratch instance, runs schema and row-count validation, and records the elapsed time against the 30-minute recovery time objective (RTO).
 
-The highest-value recovery scenario is not hardware failure — the Multi-AZ standby covers that automatically. It is **a bad migration or a buggy bulk job corrupting data at 14:03**, where PITR to 14:02 is the only option. That is what the WAL archive is for, and that is what the drill rehearses.
+The highest-value recovery scenario is not hardware failure — the Multi-availability zone (AZ) standby covers that automatically. It is **a bad migration or a buggy bulk job corrupting data at 14:03**, where point-in-time recovery (PITR) to 14:02 is the only option. That is what the WAL archive is for, and that is what the drill rehearses.
 
 ---
 
@@ -347,6 +282,8 @@ The highest-value recovery scenario is not hardware failure — the Multi-AZ sta
 
 Alembic, with migrations reviewed as carefully as application code.
 
-Rules that prevent the classic outage: every migration is backward compatible with the currently running application version, because deployment is rolling and old and new code run simultaneously. Column drops and renames are therefore **expand–migrate–contract** across three releases — add the new column and dual-write, backfill in batches, then drop the old column once no running code references it.
+Rules that prevent the classic outage: every migration is backward compatible with the currently running application version, because deployment is rolling and old and new code run simultaneously.
+
+Column drops and renames are therefore **expand–migrate–contract** across three releases — add the new column and dual-write, backfill in batches, then drop the old column once no running code references it.
 
 Also mandatory: `CREATE INDEX CONCURRENTLY` on any populated table, since a plain `CREATE INDEX` takes an `ACCESS EXCLUSIVE` lock and stalls all writes; a `lock_timeout` on every migration so a blocked DDL statement fails fast instead of queueing behind a long query and blocking the entire table; batched backfills rather than a single `UPDATE` over millions of rows; and a tested down-path, or an explicit, documented decision that a given migration is forward-only.

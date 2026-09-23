@@ -1,10 +1,12 @@
 # Observability & Traceability
 
+Short forms are written out the first time they appear. The full list is in the [glossary](GLOSSARY.md).
+
 ## 1. The Design Goal
 
 Observability is not "install a logging library". The goal is a specific, testable property:
 
-> **Given only a correlation ID from a user complaint, an engineer can reconstruct everything the system did for that request — across the API, the worker, and the database — in under five minutes, without adding code and without reproducing the issue.**
+> **Given only a correlation ID from a user complaint, an engineer can reconstruct everything the system did for that request — across the application programming interface (API), the worker, and the database — in under five minutes, without adding code and without reproducing the issue.**
 
 Everything below exists to make that sentence true. The binding mechanism is a **correlation ID generated at the edge and propagated everywhere**: every log line, every trace span, every audit row, every outbox event, and every error response body carries it.
 
@@ -14,7 +16,7 @@ That last one is the highest-leverage detail in this document. Because the corre
 
 ## 2. Structured Logging
 
-**JSON only, one event per line, no free-text interpolation.**
+**JavaScript Object Notation (JSON) only, one event per line, no free-text interpolation.**
 
 ```json
 {
@@ -54,7 +56,7 @@ The failure mode this table prevents is log-level inflation, where everything be
 
 ### What never goes into a log
 
-Passwords, tokens, cookies, `Authorization` headers, task titles or descriptions, and full email addresses. Emails are masked (`a***@example.com`); IP addresses are truncated in the last octet; user content is referenced by ID only.
+Passwords, tokens, cookies, `Authorization` headers, task titles or descriptions, and full email addresses. Emails are masked (`a***@example.com`); Internet Protocol address (IP) addresses are truncated in the last octet; user content is referenced by ID only.
 
 This is enforced by a redaction processor in the logging pipeline that strips known-sensitive key names, plus a rule that domain objects are never passed whole to a logger — only explicit field allowlists. Relying on developers to remember is not a control; it works until the one time someone logs an exception whose message contains the request body.
 
@@ -64,9 +66,9 @@ This is enforced by a redaction processor in the logging pipeline that strips kn
 
 ## 3. Metrics
 
-Prometheus-compatible, scraped from `/metrics`. Cardinality is managed deliberately: route *templates* (`/api/v1/tasks/{task_id}`), never concrete paths. Putting a UUID in a label name produces millions of time series and takes down the metrics backend — a self-inflicted outage caused by monitoring.
+Prometheus-compatible, scraped from `/metrics`. Cardinality is managed deliberately: route *templates* (`/api/v1/tasks/{task_id}`), never concrete paths. Putting a unique identifier (UUID) in a label name produces millions of time series and takes down the metrics backend — a self-inflicted outage caused by monitoring.
 
-### RED metrics, per route
+### rate, errors, and duration (RED) metrics, per route
 
 | Metric | Type | Labels |
 |---|---|---|
@@ -74,13 +76,13 @@ Prometheus-compatible, scraped from `/metrics`. Cardinality is managed deliberat
 | `http_request_duration_seconds` | histogram | `method`, `route` |
 | `http_requests_in_flight` | gauge | `route` |
 
-Histograms, not averages. An average latency of 120 ms is compatible with 5% of users waiting 4 seconds; only percentiles reveal that, and the p99 is where users actually decide the product is broken.
+Histograms, not averages. An average latency of 120 ms is compatible with 5% of users waiting 4 seconds; only percentiles reveal that, and the 99th percentile (p99) is where users actually decide the product is broken.
 
 ### Resource and dependency metrics
 
 | Metric | Why it matters |
 |---|---|
-| `db_pool_connections_in_use` / `_available` | **The first bottleneck** ([Scalability §10](SCALABILITY.md#10-what-would-actually-break-first)). Saturation here presents as high latency with idle CPU, which is why it needs a dedicated metric rather than being inferred |
+| `db_pool_connections_in_use` / `_available` | **The first bottleneck** ([Scalability section 10](SCALABILITY.md#10-what-would-actually-break-first)). Saturation here presents as high latency with idle central processing unit (CPU), which is why it needs a dedicated metric rather than being inferred |
 | `db_query_duration_seconds` | Per operation; catches a regressed plan |
 | `db_replication_lag_seconds` | Correctness input for replica routing |
 | `redis_operation_duration_seconds` | |
@@ -110,7 +112,7 @@ These are what distinguish useful monitoring from infrastructure monitoring.
 
 ## 4. Distributed Tracing
 
-OpenTelemetry, with auto-instrumentation for FastAPI, SQLAlchemy, Redis, and outbound HTTP, plus manual spans around business operations.
+OpenTelemetry, with auto-instrumentation for FastAPI, SQLAlchemy, Redis, and outbound Hypertext Transfer Protocol (HTTP), plus manual spans around business operations.
 
 Even in a monolith, tracing earns its place: it shows the *decomposition* of a slow request. A `PATCH /tasks/{id}` taking 800 ms could be slow in policy evaluation, the load query, the update, or the audit insert, and a trace answers that in one glance rather than by adding timing logs and redeploying.
 
@@ -130,7 +132,7 @@ Trace 4bf92f35... (total 847 ms)
     └── uow.commit                                    [db]     32 ms
 ```
 
-Spans carry the SQL *statement template* — never bound parameters, which would put user data into the tracing backend.
+Spans carry the Structured Query Language (SQL) *statement template* — never bound parameters, which would put user data into the tracing backend.
 
 **Trace context is propagated into asynchronous work.** The outbox row stores the `traceparent`, and the worker continues the trace when it processes the event. Without this, the trace ends at the API response and "why did this user never get their verification email?" becomes a separate, disconnected investigation. With it, the email send is a child span of the registration request that caused it — which is exactly the link an engineer needs.
 
@@ -150,7 +152,11 @@ The audit log is a **security and compliance control**, distinct from applicatio
 | Mutability | Rotated and expired | **Append-only; the app role has no `UPDATE`/`DELETE`** |
 | Retention | 30 days | 1 year hot, 7 years archived |
 
-Two properties make it trustworthy. **Transactional writes** mean a state change without a corresponding audit record is impossible, whereas a log line emitted after a commit is lost if the process dies in between — precisely when you most need it. **Append-only privileges** mean an attacker who compromises the application cannot erase their own tracks; deleting audit history requires separate database credentials that the application does not hold.
+Two properties make it trustworthy.
+
+**Transactional writes** mean a state change without a corresponding audit record is impossible, whereas a log line emitted after a commit is lost if the process dies in between — precisely when you most need it.
+
+**Append-only privileges** mean an attacker who compromises the application cannot erase their own tracks; deleting audit history requires separate database credentials that the application does not hold.
 
 Audited events include every authentication outcome, refresh reuse detection, all task mutations with a field-level before/after diff, **all administrator cross-user access including reads**, every privilege and status change, every authorization denial, and every data export or erasure.
 
@@ -160,9 +166,15 @@ Audited events include every authentication outcome, refresh reuse detection, al
 
 ## 6. Health Checks
 
-Specified in [API Design §5.11](API_DESIGN.md#511-health-and-operational-endpoints) and their reliability rationale in [Availability §3](AVAILABILITY.md#3-application-instance-failure). The short version: liveness checks nothing external, readiness checks dependencies. A liveness probe that touches the database turns a transient database fault into an orchestrator-driven crash loop across every replica.
+Specified in [API Design section 5.11](API_DESIGN.md#511-health-and-operational-endpoints) and their reliability rationale in [Availability section 3](AVAILABILITY.md#3-application-instance-failure).
 
-Beyond probes, **synthetic monitoring** runs a full journey every minute from outside the VPC — register, log in, create a task, list, update, delete — and alerts on failure or latency regression. This catches what internal metrics cannot: DNS problems, certificate expiry, WAF misconfiguration, and CDN faults. Every one of those produces a total user-facing outage while every internal dashboard stays green.
+The short version: liveness checks nothing external, readiness checks dependencies. A liveness probe that touches the database turns a transient database fault into an orchestrator-driven crash loop across every replica.
+
+Beyond probes, **synthetic monitoring** runs a full journey every minute from outside the virtual private cloud (VPC) — register, log in, create a task, list, update, delete — and alerts on failure or latency regression.
+
+This catches what internal metrics cannot: Domain Name System (DNS) problems, certificate expiry, web application firewall (WAF) misconfiguration, and content delivery network (CDN) faults.
+
+Every one of those produces a total user-facing outage while every internal dashboard stays green.
 
 ---
 
@@ -173,7 +185,7 @@ Beyond probes, **synthetic monitoring** runs a full journey every minute from ou
 | Alert | Condition | Severity |
 |---|---|---|
 | Error rate elevated | 5xx > 1% for 5 min | Page |
-| Latency SLO breach | p95 > 500 ms for 10 min | Page |
+| Latency service level objective (SLO) breach | 95th percentile (p95) > 500 ms for 10 min | Page |
 | Service down | Synthetic journey fails twice | Page |
 | Database unreachable | Connection failures > 10 in 1 min | Page |
 | **Connection pool saturated** | > 90% in use for 5 min | Page |
@@ -211,7 +223,11 @@ A user submits a ticket containing `correlation_id: 01J8XQ2K9F3M7N4P`, taken fro
 
 ### A user reports slowness
 
-Start from the latency histogram for the route to see whether the whole route regressed or only the tail. Pull sampled slow traces for that route and look at the span breakdown; in practice the answer is nearly always one of a database query whose plan changed, connection-pool wait time, an N+1 pattern from a new relationship load, or a slow external call. The span attribution distinguishes these immediately, and each has a different fix.
+Start from the latency histogram for the route to see whether the whole route regressed or only the tail.
+
+Pull sampled slow traces for that route and look at the span breakdown; in practice the answer is nearly always one of a database query whose plan changed, connection-pool wait time, an N+1 pattern from a new relationship load, or a slow external call.
+
+The span attribution distinguishes these immediately, and each has a different fix.
 
 Then confirm with `pg_stat_statements` for the specific statement, check `db_pool_connections_in_use` for saturation, and compare against the deployment timeline.
 

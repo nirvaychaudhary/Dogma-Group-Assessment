@@ -1,16 +1,22 @@
 # Proposed Code Structure
 
+Short forms are written out the first time they appear. The full list is in the [glossary](GLOSSARY.md).
+
 ## 1. The Organising Idea
 
 The package layout is **modular by domain at the top level, layered within each module**.
 
-The common alternative — top-level `routers/`, `services/`, `models/`, `schemas/` — groups files by technical role. It looks tidy on day one and degrades predictably: adding one feature touches five directories, every directory eventually contains everything, and nothing tells you where a domain boundary lies. Grouping by domain first means a feature is largely contained in one directory, and the boundary that would become a service boundary is already visible in the filesystem.
+The common alternative — top-level `routers/`, `services/`, `models/`, `schemas/` — groups files by technical role.
+
+It looks tidy on day one and degrades predictably: adding one feature touches five directories, every directory eventually contains everything, and nothing tells you where a domain boundary lies.
+
+Grouping by domain first means a feature is largely contained in one directory, and the boundary that would become a service boundary is already visible in the filesystem.
 
 Four rules hold the structure together:
 
 1. **Dependencies point inward.** `api → services → domain`, and `services → repositories → domain`. The domain layer imports nothing from the layers outside it.
-2. **The domain layer has no I/O.** No SQLAlchemy, no HTTP, no `datetime.now()` — time is injected. This is what makes business rules testable in microseconds and portable across delivery mechanisms.
-3. **Modules communicate through published interfaces.** `modules/tasks` may import `modules.identity`'s public surface, never its repositories or ORM models.
+2. **The domain layer has no I/O.** No SQLAlchemy, no Hypertext Transfer Protocol (HTTP), no `datetime.now()` — time is injected. This is what makes business rules testable in microseconds and portable across delivery mechanisms.
+3. **Modules communicate through published interfaces.** `modules/tasks` may import `modules.identity`'s public surface, never its repositories or object-relational mapping (ORM) models.
 4. **Infrastructure is injected, not imported.** Services depend on protocols; concrete adapters are wired at the composition root.
 
 These rules are enforced in CI by an import-linter contract, not by convention. A convention that is only documented is a convention that erodes — usually under deadline pressure, which is exactly when the boundary matters most.
@@ -152,7 +158,7 @@ task-management-system/
 
 | Layer | Knows about | Must not know about | Test style |
 |---|---|---|---|
-| `router.py` | HTTP, schemas, services | SQL, domain internals | API tests |
+| `router.py` | HTTP, schemas, services | Structured Query Language (SQL), domain internals | application programming interface (API) tests |
 | `schemas.py` | Wire format, validation | Persistence | Unit |
 | `service.py` | Use cases, transactions, policy, audit | HTTP, SQL dialect | Integration |
 | `domain/` | Business rules, invariants | **Everything external** | Unit, fast |
@@ -169,7 +175,9 @@ This costs a mapping layer, which is real overhead. What it buys:
 - **Persistence concerns cannot leak into business logic.** With ORM entities used directly, a lazy-loaded relationship inside a business method becomes a silent N+1 in production, and the business layer starts caring about session lifetimes and detached instances.
 - **The schema can change independently of the rules.** Splitting a column does not ripple into domain logic.
 
-I want to be honest that this is the most debatable choice in the structure. For a genuinely simple CRUD service, using ORM models directly is faster and perfectly defensible. I chose separation here because the domain contains rules that are worth protecting — the status state machine, the ownership invariant, version-based concurrency — and because those rules are exactly what needs exhaustive, fast testing. If the entity were a bag of fields with no behaviour, I would not pay this cost.
+I want to be honest that this is the most debatable choice in the structure. For a genuinely simple create, read, update, and delete (CRUD) service, using ORM models directly is faster and perfectly defensible.
+
+I chose separation here because the domain contains rules that are worth protecting — the status state machine, the ownership invariant, version-based concurrency — and because those rules are exactly what needs exhaustive, fast testing. If the entity were a bag of fields with no behaviour, I would not pay this cost.
 
 ### Why `interface.py` exists in each module
 
@@ -186,7 +194,9 @@ class IdentityInterface(Protocol):
 
 ### Why `security/policy.py` is at the top level, not inside a module
 
-Authorization is not the property of any one module — it spans all of them, and it is the system's primary risk ([Security §1](SECURITY.md#1-threat-model-first)). Placing it at the top level means the entire authorization model is one file, reviewable in one sitting, with one owner and one test suite. Scattering ownership checks across module services is how one of them ends up missing.
+Authorization is not the property of any one module — it spans all of them, and it is the system's primary risk ([Security section 1](SECURITY.md#1-threat-model-first)).
+
+Placing it at the top level means the entire authorization model is one file, reviewable in one sitting, with one owner and one test suite. Scattering ownership checks across module services is how one of them ends up missing.
 
 ---
 
@@ -252,7 +262,7 @@ Because the domain and the policy engine are pure, the two most correctness-crit
 | New task field | `tasks/` + one migration |
 | Task sharing / ACLs | `security/policy.py` + `tasks/repository.py` — the ownership check is already centralised |
 | Third role | `security/permissions.py` — a data change |
-| SSO | New adapter in `integrations/`, plus `identity/service.py` |
+| single sign-on (SSO) | New adapter in `integrations/`, plus `identity/service.py` |
 | Extract workers | Already a separate process; no refactor |
 | Extract identity | Replace `interface.py` implementation with an HTTP client |
 | Swap the email provider | One file in `integrations/email/` |
@@ -267,6 +277,6 @@ The test worth applying to any structure is whether the *expected* changes are c
 
 **Typing:** full annotations, `mypy --strict`, no bare `Any`. Domain identifiers are `NewType`-wrapped (`UserId`, `TaskId`) rather than raw `UUID`, so passing a task ID where a user ID is expected is a type error rather than a security incident.
 
-**Async:** async all the way down for I/O; CPU-bound work such as Argon2id verification goes to a thread pool so it cannot block the event loop. A single synchronous database call in an async handler stalls every concurrent request on that worker — one of the easiest and most damaging mistakes to make in an async Python service, and one that load testing catches only if you look for it.
+**Async:** async all the way down for I/O; processor-heavy work such as Argon2id verification goes to a thread pool so it cannot block the event loop. A single synchronous database call in an async handler stalls every concurrent request on that worker — one of the easiest and most damaging mistakes to make in an async Python service, and one that load testing catches only if you look for it.
 
 **Imports:** absolute only, no wildcards, no circular imports — enforced by lint rather than by discipline.

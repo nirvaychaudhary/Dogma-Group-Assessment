@@ -1,5 +1,7 @@
 # System Design — Major Flows
 
+Short forms are written out the first time they appear. The full list is in the [glossary](GLOSSARY.md).
+
 This document walks through the flows that define the system's behaviour. For each one I cover the happy path, the interactions that matter, and the failure and edge cases that drove the design.
 
 **Flows covered:** [Registration](#1-user-registration) · [Authentication](#2-authentication) · [Token refresh](#3-token-refresh-with-reuse-detection) · [Listing tasks](#4-user-accessing-their-tasks) · [Creating a task](#5-creating-a-task) · [Updating a task](#6-updating-a-task) · [Deleting a task](#7-deleting-a-task) · [Admin cross-user access](#8-administrator-accessing-another-users-task)
@@ -12,9 +14,9 @@ This document walks through the flows that define the system's behaviour. For ea
 |---|---|
 | **Principal** | The authenticated identity: `{user_id, role, token_id, token_version}`, derived from the access token by middleware. Never taken from the request body or a query parameter. |
 | **Correlation ID** | Minted at the edge if absent, echoed in the `X-Correlation-ID` response header, attached to every log line, span and audit row. |
-| **Transaction boundary** | Exactly one database transaction per state-changing use case, opened and committed by the application service. Neither the API layer nor the repository layer commits. |
+| **Transaction boundary** | Exactly one database transaction per state-changing use case, opened and committed by the application service. Neither the application programming interface (API) layer nor the repository layer commits. |
 | **Audit** | Every state change writes an `audit_log` row in the same transaction as the change itself. |
-| **Errors** | RFC 9457 `application/problem+json`. See [API Design §4](API_DESIGN.md#4-error-model). |
+| **Errors** | Request for Comments (RFC) 9457 `application/problem+json`. See [API Design section 4](API_DESIGN.md#4-error-model). |
 | **Resource not visible** | Returns `404`, never `403` — a `403` confirms the resource exists and turns the endpoint into an existence oracle. |
 
 ---
@@ -23,49 +25,16 @@ This document walks through the flows that define the system's behaviour. For ea
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    participant C as Client
-    participant E as Edge / WAF
-    participant A as API
-    participant P as Policy
-    participant S as Identity Service
-    participant DB as PostgreSQL
-    participant OB as Outbox Dispatcher
-    participant W as Worker
-    participant M as Email Provider
+    participant Person
+    participant Application
+    participant Database
+    participant Email
 
-    C->>E: POST /api/v1/auth/register
-    E->>E: TLS, WAF rules, IP rate limit
-    E->>A: forward + X-Correlation-ID
-    A->>A: Validate schema:<br/>email format, password policy
-    A->>P: Public endpoint — no principal required
-    A->>S: register(email, password)
-
-    rect rgb(238, 245, 255)
-    note over S,DB: Single transaction
-    S->>DB: BEGIN
-    S->>S: Hash password with Argon2id
-    S->>DB: INSERT INTO users (...)
-    alt Email already exists
-        DB-->>S: unique violation on email
-        S->>DB: ROLLBACK
-        S->>S: Enqueue "account exists" notice<br/>instead of surfacing the conflict
-    else New account
-        S->>DB: INSERT INTO email_verification_tokens<br/>(hashed token, 24h expiry)
-        S->>DB: INSERT INTO audit_log<br/>(user.registered)
-        S->>DB: INSERT INTO outbox_events<br/>(email.verification_requested)
-        S->>DB: COMMIT
-    end
-    end
-
-    S-->>A: Result
-    A-->>C: 202 Accepted — identical body in both branches
-
-    OB->>DB: Poll unpublished outbox rows
-    OB->>W: Dispatch job
-    W->>M: Send verification email
-    M-->>W: Accepted
-    W->>DB: Mark outbox row published
+    Person->>Application: Create an account
+    Application->>Application: Check password strength
+    Application->>Database: Save the account, the history, and a pending email
+    Application-->>Person: Same answer if the email is new or already used
+    Database-->>Email: Worker sends the email afterwards
 ```
 
 ### Design decisions
@@ -76,7 +45,7 @@ This costs usability: a user who forgot they had an account gets a slightly conf
 
 **`202`, not `201`.** The account row exists, but the account is not yet usable — it is unverified. `202 Accepted` honestly describes "request accepted, processing continues out of band". Returning `201 Created` would imply a fully provisioned resource the client can now use.
 
-**Password policy follows NIST SP 800-63B**: minimum 12 characters, maximum 128 (bounded to prevent a hash-CPU DoS), checked against a breached-password corpus, with no composition rules or forced rotation. Composition rules ("one uppercase, one symbol") measurably push users toward predictable patterns like `Password1!`. Length and breach-checking are what actually correlate with resistance to guessing.
+**Password policy follows NIST SP 800-63B**: minimum 12 characters, maximum 128 (bounded to prevent a attack that wastes processor time on password hashing), checked against a breached-password corpus, with no composition rules or forced rotation. Composition rules ("one uppercase, one symbol") measurably push users toward predictable patterns like `Password1!`. Length and breach-checking are what actually correlate with resistance to guessing.
 
 **Verification tokens are stored hashed** (SHA-256), exactly like passwords, and are single-use with a 24-hour expiry. A database read must not yield a usable credential.
 
@@ -88,51 +57,18 @@ This costs usability: a user who forgot they had an account gets a slightly conf
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    participant C as Client
-    participant A as API
-    participant R as Redis
-    participant S as Identity Service
-    participant DB as PostgreSQL
+    participant Person
+    participant Application
+    participant Database
 
-    C->>A: POST /api/v1/auth/login<br/>{email, password}
-    A->>R: Check login attempt counters<br/>per-IP and per-account
-    alt Threshold exceeded
-        R-->>A: Blocked
-        A-->>C: 429 + Retry-After
-    else Allowed
-        A->>S: authenticate(email, password)
-        S->>DB: SELECT user by normalised email
-        alt User missing
-            S->>S: Dummy Argon2id verify<br/>(constant-time behaviour)
-        else User found
-            S->>S: Argon2id verify
-            S->>S: Rehash if work factor outdated
-        end
-
-        alt Invalid credentials
-            S->>R: Increment failure counters
-            S->>DB: INSERT audit_log (auth.login_failed)
-            S-->>A: Failure
-            A-->>C: 401 — generic message
-        else Account locked / suspended / unverified
-            S-->>A: Failure
-            A-->>C: 403 with specific, safe reason code
-        else Valid
-            rect rgb(238, 245, 255)
-            note over S,DB: Single transaction
-            S->>DB: BEGIN
-            S->>S: Mint access JWT (15 min)
-            S->>S: Mint opaque refresh token (30 d)
-            S->>DB: INSERT refresh_tokens<br/>(SHA-256 hash, family_id, device metadata)
-            S->>DB: UPDATE users SET last_login_at
-            S->>DB: INSERT audit_log (auth.login_succeeded)
-            S->>DB: COMMIT
-            end
-            S->>R: Reset failure counters
-            S-->>A: Tokens
-            A-->>C: 200 {access_token, expires_in, token_type}<br/>+ Set-Cookie: refresh_token<br/>HttpOnly · Secure · SameSite=Strict<br/>Path=/api/v1/auth
-        end
+    Person->>Application: Email and password
+    Application->>Application: Block repeated guesses
+    Application->>Database: Look up the account
+    alt Password is wrong, or there is no account
+        Application-->>Person: The same error either way
+    else Password is correct and the account is usable
+        Application->>Database: Store a new refresh token and a history row
+        Application-->>Person: Short-lived access token and a secure cookie
     end
 ```
 
@@ -142,18 +78,22 @@ sequenceDiagram
 
 | | Access token | Refresh token |
 |---|---|---|
-| Format | JWT, EdDSA (Ed25519) signed | Opaque 256-bit random string |
+| Format | JSON Web Token (JWT), Edwards-curve Digital Signature Algorithm (EdDSA) (Ed25519) signed | Opaque 256-bit random string |
 | Lifetime | 15 minutes | 30 days, sliding |
 | Storage (server) | Not stored | SHA-256 hash in PostgreSQL |
 | Storage (client) | In memory | `HttpOnly` cookie |
 | Verified by | Signature check, no I/O | Database lookup |
 | Revocable | Only via denylist | Immediately |
 
-The access token is stateless so that the hot path — every authenticated request — needs no database round trip. The cost is that it cannot be instantly revoked, which is bounded to 15 minutes and further reduced by a denylist for explicit logout and security events. The refresh token is stateful precisely because revocation matters over a 30-day horizon; making it a JWT would give up that control for no benefit, since it is presented rarely and a database lookup at that frequency is free.
+The access token is stateless so that the hot path — every authenticated request — needs no database round trip.
+
+The cost is that it cannot be instantly revoked, which is bounded to 15 minutes and further reduced by a denylist for explicit logout and security events.
+
+The refresh token is stateful precisely because revocation matters over a 30-day horizon; making it a JWT would give up that control for no benefit, since it is presented rarely and a database lookup at that frequency is free.
 
 **EdDSA over HMAC.** Asymmetric signing means a future extracted service, or a gateway, can verify tokens with a public key without holding the ability to *mint* them. That is a meaningful blast-radius reduction. Ed25519 specifically, rather than RSA, for smaller signatures and no padding-mode footguns.
 
-**Access token in memory, refresh token in an `HttpOnly` cookie.** This is the combination that resists both major browser attacks: XSS cannot read an `HttpOnly` cookie, and the access token's short life plus memory-only storage limits what a successful XSS can steal. The cookie's `SameSite=Strict` and narrow `Path` blunt CSRF, and because the refresh endpoint is the only cookie-authenticated route, that is the only place CSRF applies. Non-browser clients receive the refresh token in the response body instead.
+**Access token in memory, refresh token in an `HttpOnly` cookie.** This is the combination that resists both major browser attacks: cross-site scripting (XSS) cannot read an `HttpOnly` cookie, and the access token's short life plus memory-only storage limits what a successful XSS can steal. The cookie's `SameSite=Strict` and narrow `Path` blunt cross-site request forgery (CSRF), and because the refresh endpoint is the only cookie-authenticated route, that is the only place CSRF applies. Non-browser clients receive the refresh token in the response body instead.
 
 **Login failures are counted on two axes.** Per-account counters stop a classic brute-force against one victim; per-IP/ASN counters stop credential stuffing that tries one password against thousands of accounts — an attack that per-account limits are structurally blind to. Backoff is exponential rather than a hard lock, because a hard account lock hands an attacker a cheap denial-of-service against any user whose email they know.
 
@@ -166,40 +106,20 @@ The access token is stateless so that the hot path — every authenticated reque
 This flow is short but is the most security-sensitive in the system, so it is documented separately.
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    participant C as Client
-    participant A as API
-    participant S as Identity Service
-    participant DB as PostgreSQL
-    participant R as Redis
+flowchart TB
+    present[Person presents the refresh token]
+    known{Known, unexpired, and not yet replaced?}
+    race{Replaced only a few seconds ago by this same login?}
+    stolen[Revoke the whole login family and alert the person]
+    refuse[Refuse and ask for a fresh login]
+    rotate[Issue a new access token and a new refresh token]
 
-    C->>A: POST /api/v1/auth/refresh<br/>(cookie or body)
-    A->>S: refresh(token)
-    S->>S: SHA-256 the presented token
-    S->>DB: SELECT by token_hash
-
-    alt Not found or expired
-        S-->>A: Invalid
-        A-->>C: 401
-    else Found but already revoked
-        note over S,DB: Reuse detected — the token was<br/>rotated away earlier, so this copy<br/>was captured by someone
-        S->>DB: Revoke the entire token family
-        S->>R: Denylist all live access tokens<br/>for this user
-        S->>DB: INSERT audit_log<br/>(auth.refresh_reuse_detected) — HIGH severity
-        S->>DB: Enqueue security alert email
-        S-->>A: Invalid
-        A-->>C: 401 — all sessions terminated
-    else Valid and active
-        rect rgb(238, 245, 255)
-        S->>DB: BEGIN
-        S->>DB: Revoke presented token,<br/>set replaced_by
-        S->>DB: INSERT new refresh token,<br/>same family_id
-        S->>DB: COMMIT
-        end
-        S-->>A: New token pair
-        A-->>C: 200 + new access token + rotated cookie
-    end
+    present --> known
+    known -->|Already replaced| race
+    race -->|Yes, a normal double-click| rotate
+    race -->|No, the old token was reused| stolen --> refuse
+    known -->|Unknown or expired| refuse
+    known -->|Valid| rotate
 ```
 
 **Why rotation with reuse detection.** A refresh token is a 30-day bearer credential; if it leaks, the attacker has a month of access. Rotation means each token is valid exactly once. That alone does not help if the attacker uses the stolen copy first — but it creates a detectable event, because the *legitimate* client will then present the now-revoked token. Either way round, one of the two parties triggers reuse detection, and the response is to revoke the whole family. The legitimate user is forced to re-authenticate, which is a small cost; the attacker is evicted, which is the point.
@@ -214,31 +134,15 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    participant C as Client
-    participant MW as Middleware
-    participant A as API
-    participant P as Policy
-    participant S as Task Service
-    participant RP as Repository
-    participant DB as PostgreSQL
+    participant Person
+    participant Application
+    participant Database
 
-    C->>MW: GET /api/v1/tasks?status=todo&limit=50&cursor=...
-    MW->>MW: Verify JWT, build Principal
-    MW->>MW: Per-identity rate limit
-    MW->>A: Authenticated request
-    A->>A: Validate + coerce query params<br/>(whitelist sort fields, cap limit at 100)
-    A->>P: authorize(principal, "task:list")
-    P-->>A: Allowed — any active user may list
-    A->>S: list_tasks(principal, filters, page)
-
-    S->>RP: find_by_owner(principal.user_id, filters, page)
-    note over RP,DB: owner_id is taken from the Principal,<br/>never from client input
-    RP->>DB: SELECT ... WHERE owner_id = :principal_id<br/>AND deleted_at IS NULL<br/>AND (created_at, id) < (:cursor_ts, :cursor_id)<br/>ORDER BY created_at DESC, id DESC<br/>LIMIT :limit + 1
-    DB-->>RP: Rows (index-only where possible)
-    RP-->>S: Page
-    S-->>A: Page + next cursor
-    A-->>C: 200 {data: [...], page: {next_cursor, has_more}}
+    Person->>Application: List my tasks
+    Application->>Application: Read the caller from the access token
+    Application->>Database: Load only that person's live tasks, one page
+    Database-->>Application: Page of rows
+    Application-->>Person: Tasks plus a cursor for the next page
 ```
 
 ### Design decisions
@@ -253,7 +157,7 @@ The trade-off is no random page access — you cannot jump to "page 47". For a t
 
 **No total count by default.** An exact count requires scanning the whole matching set. It is available behind an explicit opt-in flag, and beyond a threshold returns an estimate from the query planner's statistics.
 
-**Deliberately not cached.** See [Scalability §5](SCALABILITY.md#5-caching) — per-user, write-heavy data with low reuse. A cache here would add invalidation complexity and a genuine risk of cross-user leakage in exchange for little hit rate.
+**Deliberately not cached.** See [Scalability section 5](SCALABILITY.md#5-caching) — per-user, write-heavy data with low reuse. A cache here would add invalidation complexity and a genuine risk of cross-user leakage in exchange for little hit rate.
 
 ---
 
@@ -261,42 +165,17 @@ The trade-off is no random page access — you cannot jump to "page 47". For a t
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    participant C as Client
-    participant A as API
-    participant P as Policy
-    participant S as Task Service
-    participant D as Domain
-    participant RP as Repository
-    participant DB as PostgreSQL
+    participant Person
+    participant Application
+    participant Database
 
-    C->>A: POST /api/v1/tasks<br/>Idempotency-Key: 8f3c...<br/>{title, description, priority, due_at}
-    A->>A: Pydantic validation:<br/>lengths, enums, due_at not in past
-    A->>P: authorize(principal, "task:create")
-    A->>S: create_task(principal, payload, idem_key)
-
-    S->>DB: Look up idempotency_keys
-    alt Key seen, request completed
-        DB-->>S: Stored response
-        S-->>C: 201 — replayed original response
-    else Key seen, still in flight
-        S-->>C: 409 — request in progress
-    else New key
-        rect rgb(238, 245, 255)
-        note over S,DB: Single transaction
-        S->>DB: BEGIN
-        S->>DB: INSERT idempotency_keys (key, fingerprint)<br/>— unique constraint wins any race
-        S->>D: Task.create(owner_id=principal.user_id, ...)
-        D->>D: Enforce invariants:<br/>initial status = todo, version = 1
-        D-->>S: Task entity
-        S->>RP: add(task)
-        RP->>DB: INSERT INTO tasks
-        S->>DB: INSERT audit_log (task.created)
-        S->>DB: UPDATE idempotency_keys SET response
-        S->>DB: COMMIT
-        end
-        S-->>A: Task
-        A-->>C: 201 + Location + ETag: "1"
+    Person->>Application: Create a task, with an idempotency key
+    Application->>Database: Has this key already been saved?
+    alt The same request was already completed
+        Application-->>Person: Return the original answer
+    else This is a new request
+        Application->>Database: Save the task, the history, and the key together
+        Application-->>Person: Created, with a version number
     end
 ```
 
@@ -318,57 +197,19 @@ A fingerprint of the request body is stored with the key, so reusing a key with 
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    participant C as Client
-    participant A as API
-    participant P as Policy
-    participant S as Task Service
-    participant D as Domain
-    participant DB as PostgreSQL
+    participant Person
+    participant Application
+    participant Database
 
-    C->>A: PATCH /api/v1/tasks/{id}<br/>If-Match: "3"<br/>{status: "in_progress"}
-    A->>A: Validate partial payload
-    A->>S: update_task(principal, task_id, changes, if_match)
-
-    rect rgb(238, 245, 255)
-    note over S,DB: Single transaction
-    S->>DB: BEGIN
-    S->>DB: SELECT * FROM tasks<br/>WHERE id = :id AND deleted_at IS NULL
-    alt Not found
-        S->>DB: ROLLBACK
-        S-->>C: 404
-    else Found
-        S->>P: authorize(principal, "task:update", task)
-        alt Denied
-            note over P: Owner mismatch and not admin
-            S->>DB: INSERT audit_log (authz.denied)
-            S->>DB: COMMIT
-            S-->>C: 404 — not 403, to avoid confirming existence
-        else Allowed
-            alt If-Match present and != task.version
-                S->>DB: ROLLBACK
-                S-->>C: 412 Precondition Failed<br/>+ current representation
-            else Version matches or no precondition
-                S->>D: task.apply(changes)
-                D->>D: Validate state transition<br/>against the status state machine
-                alt Illegal transition
-                    D-->>S: DomainError
-                    S-->>C: 422 with allowed transitions
-                else Legal
-                    S->>DB: UPDATE tasks SET ..., version = version + 1<br/>WHERE id = :id AND version = :expected
-                    alt 0 rows affected
-                        note over S,DB: Lost the race to a concurrent writer
-                        S->>DB: ROLLBACK
-                        S-->>C: 409 Conflict
-                    else 1 row affected
-                        S->>DB: INSERT audit_log (task.updated)<br/>with before/after field diff
-                        S->>DB: COMMIT
-                        S-->>C: 200 + ETag: "4"
-                    end
-                end
-            end
-        end
-    end
+    Person->>Application: Update a task, with the version they last saw
+    Application->>Database: Load the task
+    alt Not the owner
+        Application-->>Person: Not found
+    else Version is stale
+        Application-->>Person: Conflict, plus the current task
+    else Version matches and the change is allowed
+        Application->>Database: Save the task and the history together
+        Application-->>Person: Updated task and a new version
     end
 ```
 
@@ -382,7 +223,7 @@ I chose optimistic over pessimistic (`SELECT FOR UPDATE`) because conflicts here
 
 **`PATCH`, not `PUT`.** Clients update one or two fields at a time. `PUT` requires sending the full representation, which turns every partial edit into a read-modify-write and makes accidental field clobbering the default behaviour. Distinguishing "field absent" from "field explicitly set to null" is handled with a sentinel in the schema.
 
-**The status state machine lives in the domain**, not in a validator. `todo → in_progress → done`, with `done → in_progress` permitted (reopening) and `done → todo` rejected. Encoding this as an entity method rather than scattered `if` statements means every caller — HTTP, admin path, future bulk import — obeys the same rules.
+**The status state machine lives in the domain**, not in a validator. `todo → in_progress → done`, with `done → in_progress` permitted (reopening) and `done → todo` rejected. Encoding this as an entity method rather than scattered `if` statements means every caller — Hypertext Transfer Protocol (HTTP), admin path, future bulk import — obeys the same rules.
 
 **The audit row records a before/after diff of changed fields only.** Storing whole snapshots on every edit bloats the table; storing only the delta answers the question anyone actually asks ("who changed the due date, and what was it before?").
 
@@ -398,7 +239,7 @@ Delete is a soft delete: `UPDATE tasks SET deleted_at = now(), deleted_by = :pri
 - The unique constraint on `(owner_id, title)` — if enabled — must be partial on `deleted_at IS NULL`, otherwise a deleted task blocks re-creating one with the same title.
 - Returns `204 No Content`. Deleting an already-deleted task returns `204` as well: `DELETE` is idempotent, and the caller's desired end state has been achieved.
 
-**GDPR erasure is a separate, genuinely destructive path.** Soft delete is for user convenience and does not satisfy a right-to-erasure request. Account deletion runs a distinct job that hard-deletes tasks and credentials and pseudonymises the principal's identifier in the append-only audit log — the audit log itself must remain intact, since it is a security and integrity control. Conflating the two is a common and expensive compliance mistake.
+**General Data Protection Regulation (GDPR) erasure is a separate, genuinely destructive path.** Soft delete is for user convenience and does not satisfy a right-to-erasure request. Account deletion runs a distinct job that hard-deletes tasks and credentials and pseudonymises the principal's identifier in the append-only audit log — the audit log itself must remain intact, since it is a security and integrity control. Conflating the two is a common and expensive compliance mistake.
 
 ---
 
@@ -406,39 +247,17 @@ Delete is a soft delete: `UPDATE tasks SET deleted_at = now(), deleted_by = :pri
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    participant AD as Administrator
-    participant MW as Middleware
-    participant A as Admin Router
-    participant P as Policy
-    participant S as Task Service
-    participant DB as PostgreSQL
-    participant SIEM as Security Monitoring
+    participant Admin
+    participant Application
+    participant Database
 
-    AD->>MW: GET /api/v1/admin/tasks?owner_id=U123
-    MW->>MW: Verify JWT, build Principal
-    MW->>MW: Admin rate-limit bucket<br/>(separate from user bucket)
-    MW->>A: Authenticated request
-
-    A->>P: authorize(principal, "admin:task:list")
-    alt role != admin
-        P->>DB: INSERT audit_log (authz.denied) — HIGH severity
-        P-->>A: Denied
-        A-->>AD: 404 — the admin namespace<br/>does not acknowledge itself
-    else role == admin
-        A->>S: admin_list_tasks(principal, filters)
-        S->>DB: SELECT ... WHERE owner_id = :target<br/>AND deleted_at IS NULL<br/>ORDER BY created_at DESC LIMIT ...
-        DB-->>S: Rows
-
-        rect rgb(255, 244, 230)
-        note over S,DB: Every cross-user access is recorded
-        S->>DB: INSERT audit_log<br/>(admin.tasks_viewed, target_user_id,<br/>result_count, correlation_id, ip)
-        end
-
-        S-->>A: Page
-        A-->>AD: 200 + X-Admin-Action-Logged: true
-        DB-->>SIEM: Audit stream
-        SIEM->>SIEM: Detect anomalous volume<br/>or off-hours access
+    Admin->>Application: Open another person's task in the admin area
+    alt Caller is not an administrator
+        Application->>Database: Record the denied attempt
+        Application-->>Admin: Not found
+    else Caller is an administrator
+        Application->>Database: Load the task and record the view
+        Application-->>Admin: The task, marked as logged
     end
 ```
 
