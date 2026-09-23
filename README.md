@@ -1,10 +1,6 @@
 # Task Management Platform — Architecture & Technical Design
 
-Short forms are written out the first time they appear. The full list is in the [glossary](docs/GLOSSARY.md).
-
-A complete architecture and technical design for a multi-user task management backend, produced as a Senior Python Developer technical assessment.
-
-**This repository contains documentation only.** No application code, database, or infrastructure is implemented — that is the stated scope of the assessment. Small pseudocode fragments appear where they explain a decision more clearly than prose.
+Backend design for a task manager: people register, keep their own tasks, and an administrator can look across accounts. This repository is the design. There is no application code in it. Less common abbreviations are in the [glossary](docs/GLOSSARY.md).
 
 ---
 
@@ -83,9 +79,23 @@ Read in this order for a complete picture, or jump to what you need.
 | — | **[Diagrams](docs/diagrams/)** | The four required diagrams, each split so the boxes stay readable | A visual route into the design |
 | — | **[Glossary](docs/GLOSSARY.md)** | Full names for every short form | A plain-language lookup |
 
-### If you have ten minutes
+## How to read the high-level design
 
-Read this page, then [HLD section 3 (architecture style)](docs/HLD.md#3-architecture-style-modular-monolith), [System Design section 8 (admin access)](docs/SYSTEM_DESIGN.md#8-administrator-accessing-another-users-task), and [Risks & Trade-offs section 6](docs/RISKS_AND_TRADEOFFS.md#6-principal-trade-offs). Those three sections carry most of the reasoning.
+Start here, then open [docs/HLD.md](docs/HLD.md).
+
+Section 2 is the load I sized for. Section 3 is why I kept this as one service. Section 4 is the picture. Section 14 is the list of things I left out, and the condition that would make me add each one.
+
+If you have time for two more pages, read [how an administrator opens someone else's task](docs/SYSTEM_DESIGN.md#8-administrator-accessing-another-users-task) and the [trade-offs](docs/RISKS_AND_TRADEOFFS.md#6-principal-trade-offs).
+
+## Key decisions
+
+The full list, with the options I rejected, is in [DECISION_LOG.md](DECISION_LOG.md). The ones that shape everything else:
+
+- One deployable Python service, not a set of microservices.
+- PostgreSQL as the only system of record.
+- A short-lived signed access token, plus a rotating refresh token we can revoke.
+- Permission checks in one place, and a separate `/admin` area.
+- No cache in front of a person's task list at launch.
 
 ---
 
@@ -96,7 +106,7 @@ Read this page, then [HLD section 3 (architecture style)](docs/HLD.md#3-architec
 | Language | Python 3.12 | Specified by the assessment |
 | Framework | FastAPI + Pydantic v2 | Validation at the boundary is a security control; OpenAPI generated from code cannot drift; native async for an I/O-bound workload |
 | Database | PostgreSQL 16 | The core invariant and the dominant query are both relational; every write needs multi-row atomicity; constraints are the only validation that cannot be bypassed |
-| object-relational mapping (ORM) | SQLAlchemy 2.0 async + Alembic | Mature, explicit, and does not force the domain to look like the schema |
+| ORM | SQLAlchemy 2.0 async + Alembic | Mature, and it does not force the domain model to look like the tables |
 | Cache/queue | Redis + arq | Already required for rate limiting; adding a second broker for four low-volume job types would be unearned complexity |
 | Auth | Argon2id, EdDSA JWT, rotating opaque refresh tokens | Memory-hard hashing; asymmetric signing limits blast radius; rotation makes token theft detectable |
 | Compute | Elastic Container Service (ECS) Fargate | Kubernetes is a platform to operate, and a 2–4 person team cannot amortise that cost |

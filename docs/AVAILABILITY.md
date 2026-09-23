@@ -1,7 +1,5 @@
 # Availability & Resilience
 
-Short forms are written out the first time they appear. The full list is in the [glossary](GLOSSARY.md).
-
 ## 1. The Target, and What It Permits
 
 The service level objective (SLO) is **99.9% monthly availability**, measured as the ratio of non-5xx responses to total requests on user-facing endpoints. That allows roughly **43 minutes of error budget per month**.
@@ -41,7 +39,7 @@ Honest inventory. A design that claims none is a design that has not looked.
 | **Domain Name System (DNS)** | **Yes** | Multiple providers' nameservers, long TTLs on stable records | Rare but total when it happens |
 | **continuous integration and continuous delivery (CI/CD) pipeline** | Yes for changes | Documented manual break-glass deploy | Cannot ship during an outage |
 
-### The two single points of failure (SPOFs) I am accepting, and why
+### The two single points of failure I am accepting, and why
 
 **The database primary.** Multi-AZ gives an automatic failover in 60–120 seconds with zero data loss, because the standby is synchronous. Eliminating that window entirely requires either multi-master — which brings write-conflict resolution into a system that has no need for it — or an application that can serve writes without a database, which is not meaningful here. A 1–2 minute write outage during an unplanned failover consumes a few minutes of a 43-minute monthly budget. That is the right trade. Crucially, **reads continue to work during failover** because the application degrades to read-only rather than returning errors (section 4).
 

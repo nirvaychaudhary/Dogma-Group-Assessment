@@ -1,7 +1,5 @@
 # Development Practices
 
-Short forms are written out the first time they appear. The full list is in the [glossary](GLOSSARY.md).
-
 The practices below are chosen on one criterion: **does this catch a class of defect automatically, or does it rely on someone remembering?** Anything that depends on vigilance will fail eventually, usually under deadline pressure. Every practice here is either enforced by a tool in CI or is a small number of explicit, reviewable rules.
 
 ---
@@ -217,7 +215,7 @@ Trunk-based over GitFlow because long-lived branches produce large, painful merg
 
 ---
 
-## 14. continuous integration and continuous delivery (CI/CD)
+## 14. CI/CD
 
 ```mermaid
 flowchart TB

@@ -1,7 +1,5 @@
 # Decision Log
 
-Short forms are written out the first time they appear. The full list is in the [glossary](docs/GLOSSARY.md).
-
 Architecturally significant decisions — those that are expensive to reverse, or that constrain later choices. Routine implementation choices are not recorded here.
 
 Each entry states the decision, why it was made, what else was considered, and what it costs. **The trade-off column is the important one.** A decision with no stated cost has not been examined properly.
@@ -11,12 +9,12 @@ Each entry states the decision, why it was made, what else was considered, and w
 | [D1](#d1--modular-monolith-rather-than-microservices) | Modular monolith rather than microservices | Accepted |
 | [D2](#d2--python-with-fastapi) | Python with FastAPI | Accepted |
 | [D3](#d3--postgresql-as-the-single-system-of-record) | PostgreSQL as the single system of record | Accepted |
-| [D4](#d4--short-lived-jwt-access-tokens-with-opaque-rotating-refresh-tokens) | Short-lived JSON Web Token (JWT) access tokens with opaque rotating refresh tokens | Accepted |
+| [D4](#d4--short-lived-jwt-access-tokens-with-opaque-rotating-refresh-tokens) | Short-lived JWT access tokens, opaque rotating refresh tokens | Accepted |
 | [D5](#d5--argon2id-for-password-hashing) | Argon2id for password hashing | Accepted |
 | [D6](#d6--a-single-authorization-policy-engine) | A single authorization policy engine | Accepted |
 | [D7](#d7--404-rather-than-403-for-object-level-denials) | `404` rather than `403` for object-level denials | Accepted |
 | [D8](#d8--a-separate-admin-namespace) | A separate `/admin` namespace | Accepted |
-| [D9](#d9--uuidv7-primary-keys) | time-sorted unique identifier (UUIDv7) primary keys | Accepted |
+| [D9](#d9--uuidv7-primary-keys) | UUIDv7 primary keys | Accepted |
 | [D10](#d10--keyset-pagination-rather-than-offset) | Keyset pagination rather than offset | Accepted |
 | [D11](#d11--optimistic-concurrency-with-a-version-column) | Optimistic concurrency with a version column | Accepted |
 | [D12](#d12--soft-delete-with-a-separate-hard-erasure-path) | Soft delete, with a separate hard-erasure path | Accepted |
@@ -25,13 +23,13 @@ Each entry states the decision, why it was made, what else was considered, and w
 | [D15](#d15--no-caching-of-user-task-data-at-launch) | No caching of user task data at launch | Accepted |
 | [D16](#d16--redis-fails-open-for-rate-limiting-and-the-token-denylist) | Redis fails open for rate limiting and the token denylist | Accepted |
 | [D17](#d17--single-region-deployment) | Single-region deployment | Accepted |
-| [D18](#d18--ecs-fargate-rather-than-kubernetes) | Elastic Container Service (ECS) Fargate rather than Kubernetes | Accepted |
+| [D18](#d18--ecs-fargate-rather-than-kubernetes) | ECS Fargate rather than Kubernetes | Accepted |
 | [D19](#d19--idempotency-keys-on-post) | Idempotency keys on `POST` | Accepted |
-| [D20](#d20--a-domain-layer-separate-from-orm-models) | A domain layer separate from object-relational mapping (ORM) models | Accepted |
+| [D20](#d20--a-domain-layer-separate-from-orm-models) | A domain layer separate from the ORM models | Accepted |
 | [D21](#d21--uniform-registration-responses-to-prevent-enumeration) | Uniform registration responses to prevent enumeration | Accepted |
-| [D22](#d22--mfa-deferred-from-v1) | multi-factor authentication (MFA) deferred from v1 | Accepted with reservations |
+| [D22](#d22--mfa-deferred-from-v1) | MFA deferred from the first release | Accepted with reservations |
 | [D23](#d23--architecture-boundaries-enforced-in-ci) | Architecture boundaries enforced in CI | Accepted |
-| [D24](#d24--rfc-9457-problemjson-for-errors) | Request for Comments (RFC) 9457 problem+json for errors | Accepted |
+| [D24](#d24--rfc-9457-problemjson-for-errors) | RFC 9457 problem responses for errors | Accepted |
 | [D25](#d25--mermaid-diagrams-in-markdown) | Mermaid diagrams in Markdown | Accepted |
 
 ---

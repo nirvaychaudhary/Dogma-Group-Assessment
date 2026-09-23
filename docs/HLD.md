@@ -1,7 +1,5 @@
 # High-Level Design — Task Management Platform
 
-Short forms are written out the first time they appear. The full list is in the [glossary](GLOSSARY.md).
-
 > **Audience:** engineers and reviewers who need to understand the shape of the system in ~15 minutes.
 > **Companion documents:** [System Design](SYSTEM_DESIGN.md) (flows), [Data Architecture](DATA_ARCHITECTURE.md) (schema), [Security](SECURITY.md), [Scalability](SCALABILITY.md), [Availability](AVAILABILITY.md), [Observability](OBSERVABILITY.md).
 

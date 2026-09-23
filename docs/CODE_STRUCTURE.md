@@ -1,7 +1,5 @@
 # Proposed Code Structure
 
-Short forms are written out the first time they appear. The full list is in the [glossary](GLOSSARY.md).
-
 ## 1. The Organising Idea
 
 The package layout is **modular by domain at the top level, layered within each module**.

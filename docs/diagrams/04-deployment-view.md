@@ -1,7 +1,5 @@
 # Diagram 4 — Deployment & Infrastructure View
 
-Short forms are written out the first time they appear. The full list is in the [glossary](../GLOSSARY.md).
-
 Physical topology, network segmentation, and the deployment pipeline. Reference implementation is Amazon Web Services (AWS); section 4.5 gives the equivalents on other providers. Discussion in [High-Level Design (HLD) section 11](../HLD.md#11-infrastructure-view).
 
 ---

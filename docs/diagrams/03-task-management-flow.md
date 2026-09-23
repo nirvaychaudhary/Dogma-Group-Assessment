@@ -1,7 +1,5 @@
 # Diagram 3 — Task Management Flow
 
-Short forms are written out the first time they appear. The full list is in the [glossary](../GLOSSARY.md).
-
 Task lifecycle, the authorization decision, write-path transaction structure, and administrator cross-user access. Detailed discussion in [System Design sections 4 to 8](../SYSTEM_DESIGN.md#4-user-accessing-their-tasks).
 
 ---

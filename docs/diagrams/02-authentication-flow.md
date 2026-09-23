@@ -1,7 +1,5 @@
 # Diagram 2 — Authentication Flow
 
-Short forms are written out the first time they appear. The full list is in the [glossary](../GLOSSARY.md).
-
 The complete token lifecycle: registration, login, authenticated access, rotation, reuse detection, and revocation. Detailed discussion in [System Design sections 1 to 3](../SYSTEM_DESIGN.md#1-user-registration) and [Security sections 3 to 4](../SECURITY.md#3-authentication).
 
 ---

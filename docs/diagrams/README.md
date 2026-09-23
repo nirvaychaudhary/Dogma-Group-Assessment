@@ -2,8 +2,6 @@
 
 Each picture is kept small on purpose. A single drawing with every box tends to overlap, so the larger views are split into a few short flows.
 
-Short forms are written out the first time they appear. The full list is in the [glossary](../GLOSSARY.md).
-
 All diagrams are written in **Mermaid**, embedded in Markdown. They render natively on GitHub, so there is nothing to install and nothing to export.
 
 The reason for this choice rather than an image-based tool: a diagram stored as a `.png` drifts from reality within weeks, because updating it means finding the original file, opening a separate application, and re-exporting — so nobody does.

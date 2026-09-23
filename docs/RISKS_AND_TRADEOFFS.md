@@ -1,7 +1,5 @@
 # Assumptions, Risks & Trade-offs
 
-Short forms are written out the first time they appear. The full list is in the [glossary](GLOSSARY.md).
-
 An architecture is only meaningful relative to what it assumes and what it accepts. This document states both, and is deliberately the least flattering document in the set.
 
 ---

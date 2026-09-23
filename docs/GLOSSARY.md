@@ -1,8 +1,8 @@
 # Glossary
 
-Short forms are written out the first time they appear in each document. This page lists them in one place, in plain language.
+Names I shortened in the notes. If a term is missing here, it is spelled out where it is first used.
 
-| Short form | Full name | Plain meaning |
+| Short form | Full name | What I mean by it |
 |---|---|---|
 | API | Application programming interface | The set of web addresses the application offers to apps |
 | AWS | Amazon Web Services | The cloud provider used as the reference deployment |

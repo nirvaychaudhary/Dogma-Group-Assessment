@@ -1,7 +1,5 @@
 # Security Architecture
 
-Short forms are written out the first time they appear. The full list is in the [glossary](GLOSSARY.md).
-
 ## 1. Threat Model First
 
 Controls without a threat model are cargo cult. This system's realistic adversaries and their objectives:

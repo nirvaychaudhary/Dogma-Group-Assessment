@@ -1,7 +1,5 @@
 # Scalability
 
-Short forms are written out the first time they appear. The full list is in the [glossary](GLOSSARY.md).
-
 ## 1. Principle: Earn Your Complexity
 
 The assessment explicitly warns against adding infrastructure for its own sake, and I agree with the instinct strongly enough to make it the organising rule of this document.

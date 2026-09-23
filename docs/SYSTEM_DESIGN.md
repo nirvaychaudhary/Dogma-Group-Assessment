@@ -1,7 +1,5 @@
 # System Design — Major Flows
 
-Short forms are written out the first time they appear. The full list is in the [glossary](GLOSSARY.md).
-
 This document walks through the flows that define the system's behaviour. For each one I cover the happy path, the interactions that matter, and the failure and edge cases that drove the design.
 
 **Flows covered:** [Registration](#1-user-registration) · [Authentication](#2-authentication) · [Token refresh](#3-token-refresh-with-reuse-detection) · [Listing tasks](#4-user-accessing-their-tasks) · [Creating a task](#5-creating-a-task) · [Updating a task](#6-updating-a-task) · [Deleting a task](#7-deleting-a-task) · [Admin cross-user access](#8-administrator-accessing-another-users-task)

@@ -1,7 +1,5 @@
 # Data Architecture
 
-Short forms are written out the first time they appear. The full list is in the [glossary](GLOSSARY.md).
-
 ## 1. Technology Choice: PostgreSQL 16
 
 **Decision: a single relational database as the system of record.**
@@ -59,13 +57,21 @@ A user owns tasks, tokens, and history. A task is also mentioned in the history.
 | Idempotency key | Key, request fingerprint, stored answer | A retried create does not make a second task |
 | Outbox event | Event type, payload, published time | The follow-up email is queued only if the database save succeeds |
 
+### Data ownership
+
+A task has one owner. That person can read and change it. An administrator can too, and that access is written into the audit history. The owner id is copied from the signed-in session. It is not a field the client can send.
+
+The same person owns their password hash, refresh tokens, and email links. Deleting the account removes those.
+
+The audit history is not owned by the user in the same way. The application may insert a row. It cannot update or delete one. If the person asks for erasure, we replace their identifier in those rows and keep the history.
+
 ---
 
 ## 3. Schema Decisions That Matter
 
-### Primary keys: time-sorted unique identifier (UUIDv7)
+### Primary keys: UUIDv7
 
-Not sequential integers, not random unique identifier (UUIDv4).
+Not a sequential integer, and not a random UUIDv4.
 
 Sequential integers are enumerable. `GET /tasks/1001` after `GET /tasks/1000` turns any authorization gap into a complete data dump, and exposes business volume to anyone who registers. UUIDv4 fixes enumerability but is random, so index inserts scatter across the B-tree, causing page splits, write amplification and index bloat on a high-insert table.
 

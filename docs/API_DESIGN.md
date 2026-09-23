@@ -1,8 +1,6 @@
-# application programming interface (API) Design
+# API Design
 
-Short forms are written out the first time they appear. The full list is in the [glossary](GLOSSARY.md).
-
-Representational State Transfer (REST) over secure web protocol (HTTPS), JavaScript Object Notation (JSON) only, versioned at `/api/v1`. The OpenAPI 3.1 document is generated from the Pydantic schemas rather than maintained by hand, so the specification cannot drift from the implementation.
+REST over HTTPS. JSON only, under `/api/v1`. The OpenAPI document is generated from the Pydantic models, so the contract and the code are the same thing. Abbreviations used below are listed in the [glossary](GLOSSARY.md).
 
 ---
 

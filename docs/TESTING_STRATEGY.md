@@ -1,7 +1,5 @@
 # Testing Strategy
 
-Short forms are written out the first time they appear. The full list is in the [glossary](GLOSSARY.md).
-
 ## 1. What the Test Suite Is For
 
 A test suite has one job: **make it safe to change the system**. That reframing drives every choice below. Tests that assert implementation details make change harder and are a net negative. Tests that pin down behaviour a user depends on make change safe.

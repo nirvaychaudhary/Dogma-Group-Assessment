@@ -1,7 +1,5 @@
 # Observability & Traceability
 
-Short forms are written out the first time they appear. The full list is in the [glossary](GLOSSARY.md).
-
 ## 1. The Design Goal
 
 Observability is not "install a logging library". The goal is a specific, testable property:
@@ -68,7 +66,7 @@ This is enforced by a redaction processor in the logging pipeline that strips kn
 
 Prometheus-compatible, scraped from `/metrics`. Cardinality is managed deliberately: route *templates* (`/api/v1/tasks/{task_id}`), never concrete paths. Putting a unique identifier (UUID) in a label name produces millions of time series and takes down the metrics backend — a self-inflicted outage caused by monitoring.
 
-### rate, errors, and duration (RED) metrics, per route
+### RED metrics, per route
 
 | Metric | Type | Labels |
 |---|---|---|
