@@ -73,6 +73,8 @@ Prometheus-compatible, scraped from `/metrics`. Cardinality is managed deliberat
 | `http_requests_total` | counter | `method`, `route`, `status_class` |
 | `http_request_duration_seconds` | histogram | `method`, `route` |
 | `http_requests_in_flight` | gauge | `route` |
+| `http_response_uncompressed_bytes` | histogram | `route` |
+| `http_response_compressed_bytes` | histogram | `route`, `encoding` |
 
 Histograms, not averages. An average latency of 120 ms is compatible with 5% of users waiting 4 seconds; only percentiles reveal that, and the 99th percentile (p99) is where users actually decide the product is broken.
 

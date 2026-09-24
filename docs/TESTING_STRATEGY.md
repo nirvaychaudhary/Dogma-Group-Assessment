@@ -133,6 +133,8 @@ Per endpoint: the happy path with a correct status code and response shape; vali
 
 Cross-cutting: correlation IDs echoed on every response including errors, Request for Comments (RFC) 9457 conformance, security headers, cross-origin resource sharing (CORS) preflight behaviour, `ETag`/`If-None-Match` yielding `304`, and `Idempotency-Key` replay.
 
+Compression is part of that pass. A list larger than 1 KB comes back as Brotli when the client asks for it, and as gzip otherwise. A login response is plain text even when the client asks for compression. A body under 1 KB is plain too.
+
 **Contract tests** validate every response against the generated OpenAPI schema, and a schema-diff check fails the build on a breaking change without a version bump. This is what makes "the API cannot drift from its documentation" a verified property rather than an intention.
 
 ---

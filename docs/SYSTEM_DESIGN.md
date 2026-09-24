@@ -288,4 +288,5 @@ The cost is some duplication between user and admin handlers. I accept it: share
 | **Connection pooling** | Per-replica SQLAlchemy pool sized so that `replicas × pool_size` stays under 60% of `max_connections`; PgBouncer in transaction mode once replica count makes that arithmetic tight. |
 | **Graceful shutdown** | On `SIGTERM`: fail readiness immediately, keep liveness healthy, drain in-flight requests up to 25 s, close pools, exit. The load balancer stops sending new traffic before the process stops accepting it. |
 | **Clock skew** | JWT validation allows 60 s leeway on `exp`/`nbf`. All stored timestamps are `TIMESTAMPTZ` in UTC; the server never trusts a client clock for anything security-relevant. |
-| **Request size** | Capped at the edge (1 MB) and in the application. An unbounded body is a trivial memory-exhaustion vector. |
+| **Request size** | Capped at the edge (1 MB) and in the application. An unbounded body is a trivial memory-exhaustion vector. Compressed request bodies are rejected |
+| **Response compression** | After the JSON is written, the edge compresses bodies over 1 KB with Brotli or gzip. Token responses are left plain |

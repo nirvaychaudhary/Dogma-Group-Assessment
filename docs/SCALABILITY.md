@@ -178,8 +178,11 @@ Growth in *rows* behaves differently from growth in *traffic*, and needs distinc
 | Audit log growing without bound | The fastest-growing table by far | Monthly partitioning plus archival; drop partitions rather than delete rows |
 | Very large single accounts | One user degrades shared resources | Per-user quotas; statement timeouts; bounded page sizes |
 | Description fields | Large rows evict hot pages from cache | `SELECT` explicit columns; list endpoints never return `description` |
+| Response bytes on a busy list | Bandwidth and mobile latency, not database CPU | Compact JSON, then Brotli or gzip at the edge for bodies over 1 KB. The application does not compress |
 
 That last point is a small detail with a large effect. A list endpoint returning 50 tasks each with a 10 KB description transfers 500 KB and pushes useful pages out of the buffer cache. List views return a summary projection; the full body is fetched only on the detail endpoint.
+
+Compression comes after that cut. A summary page of JSON often shrinks by about two thirds with Brotli. Doing it in the application would steal CPU from the requests we are already struggling to serve, so the edge does it. Token responses stay uncompressed. See [API Design](API_DESIGN.md#smaller-answers).
 
 ---
 

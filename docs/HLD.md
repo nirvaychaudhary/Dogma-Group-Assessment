@@ -117,7 +117,7 @@ The same picture, split into three so the boxes do not sit on top of each other,
 
 | Component | Responsibility | Explicitly *not* responsible for |
 |---|---|---|
-| **content delivery network (CDN) + web application firewall (WAF)** | Transport Layer Security (TLS) termination, coarse L3/L4/L7 distributed denial of service (DDoS) absorption, Open Worldwide Application Security Project (OWASP) CRS rule set, bot/IP reputation, static asset delivery | Business authorization, per-user rate limits |
+| **content delivery network (CDN) + web application firewall (WAF)** | Transport Layer Security (TLS) termination, coarse attack filtering, bot and IP reputation, and response compression (Brotli or gzip) | Business authorization, per-user rate limits, compressing token responses |
 | **Load balancer** | Health-check-driven traffic distribution across availability zones (AZs), connection draining, request timeouts | Any application logic |
 | **Middleware pipeline** | Correlation ID generation/propagation, JSON Web Token (JWT) verification → `Principal`, per-identity rate limiting, structured access logging, exception → Request for Comments (RFC) 9457 mapping | Deciding *whether* a principal may touch a *specific* object |
 | **API layer** | Hypertext Transfer Protocol (HTTP) concerns only: routing, deserialisation, schema validation, status codes, content negotiation, versioning | Business rules, persistence |
@@ -165,6 +165,7 @@ Two details that matter:
 
 - **Rate limiting is split** into a coarse pre-auth Internet Protocol address (IP) limit (cheap, protects the JWT verification path itself from being a DoS amplifier) and a fine post-auth per-identity limit (accurate, fair). Doing only the latter means an attacker with no token can still force signature verification work.
 - **Audit record, domain mutation, and outbox event are written in the same transaction.** This is the core integrity guarantee: it is impossible for a task to change without a corresponding audit row, and impossible for a notification to be queued for a change that rolled back.
+- **The answer is trimmed, then compressed at the edge.** Lists omit the long description. Nulls are left out. If the body is still over 1 KB and it does not contain a token, the content delivery network compresses it with Brotli or gzip. The application servers do not spend CPU on that. Details are in [API Design](API_DESIGN.md#smaller-answers).
 
 ---
 

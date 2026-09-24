@@ -18,6 +18,7 @@ REST over HTTPS. JSON only, under `/api/v1`. The OpenAPI document is generated f
 | Correlation | `X-Correlation-ID` accepted and always echoed | Client-side support-ticket correlation |
 | Concurrency | `ETag` on single resources, `If-Match` on mutations | Optimistic locking |
 | Idempotency | `Idempotency-Key` on `POST` | Safe retries |
+| Compression | Brotli, then gzip, on JSON larger than 1 KB | Smaller answers under load. See below |
 
 ### Response envelope
 
@@ -31,6 +32,24 @@ Collections are wrapped so pagination metadata has somewhere to live; single res
 ```
 
 Returning a bare array at the top level forecloses ever adding metadata without a breaking change — a small decision that is expensive to reverse.
+
+### Smaller answers
+
+Two steps, in this order. Compression is wasted on a fat payload.
+
+1. **Write less JSON.** Production responses are compact: no extra whitespace, and null fields are left out. A task list returns the summary fields only. The description is on the detail call. If the client already has the current version, `If-None-Match` returns `304` and an empty body, which is better than any compression.
+
+2. **Compress what is left, at the edge.** The content delivery network compresses the response. The Python process does not. Under a spike, application CPU stays on login checks and database work.
+
+| Rule | Choice |
+|---|---|
+| Client asks for Brotli (`br`) | Use Brotli. JSON compresses well with it |
+| Client asks only for gzip | Use gzip |
+| Body under 1 KB, or status `204` / `304` | Do not compress. The header would cost more than it saves |
+| Login, refresh, or any body that contains a token | Do not compress. A compressed secret next to data the caller can influence can leak the secret |
+| Request body | Not accepted in compressed form. A compressed upload is an easy way to exhaust memory |
+
+The response sets `Content-Encoding` to `br` or `gzip`, and `Vary: Accept-Encoding`.
 
 ---
 

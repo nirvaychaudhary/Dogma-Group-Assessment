@@ -205,8 +205,11 @@ Transport Layer Security (TLS) 1.3 minimum (1.2 permitted only with AEAD ciphers
 | `Content-Security-Policy` | `default-src 'none'; frame-ancestors 'none'` | Locks down the API origin, which serves no HTML |
 | `Referrer-Policy` | `strict-origin-when-cross-origin` | Prevents URL leakage |
 | `Cache-Control` | `no-store` on authenticated responses | Keeps user data out of intermediary caches |
+| `Content-Encoding` | `br` or `gzip`, only when the rules allow it | Smaller body. Never set on a response that contains a token |
 
 **cross-origin resource sharing (CORS) is an explicit allowlist of origins** with `allow_credentials=True`. Wildcard origins are prohibited, and the combination of `*` with credentials is rejected by the browser anyway. Preflight results are cached for 10 minutes.
+
+**Login and refresh responses are not compressed.** Compression plus a secret plus any bytes the caller can influence is a known way to recover that secret (the BREACH attack). Task lists are compressed. Token bodies are not. We also refuse compressed request bodies, so a small upload cannot expand into a large memory allocation.
 
 ---
 

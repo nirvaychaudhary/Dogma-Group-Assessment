@@ -31,6 +31,7 @@ Each entry states the decision, why it was made, what else was considered, and w
 | [D23](#d23--architecture-boundaries-enforced-in-ci) | Architecture boundaries enforced in CI | Accepted |
 | [D24](#d24--rfc-9457-problemjson-for-errors) | RFC 9457 problem responses for errors | Accepted |
 | [D25](#d25--mermaid-diagrams-in-markdown) | Mermaid diagrams in Markdown | Accepted |
+| [D26](#d26--compress-large-json-at-the-edge) | Compress large JSON at the edge, never token responses | Accepted |
 
 ---
 
@@ -331,3 +332,15 @@ Each entry states the decision, why it was made, what else was considered, and w
 **Alternatives.** Draw.io or Lucidchart exports — prettier, drift immediately. PlantUML — similar benefits, needs a rendering step and does not display inline on GitHub. Structurizr — excellent for C4 at larger scale, more tooling than this warrants.
 
 **Trade-off.** Less control over layout, and Mermaid's renderer occasionally places nodes awkwardly. Accuracy over aesthetics is the right trade for documentation that must stay current.
+
+---
+
+### D26 — Compress large JSON at the edge
+
+**Decision.** Trim the JSON first: compact encoding, no nulls, list views without the description. Then the content delivery network compresses bodies over 1 KB. Brotli when the client accepts it, otherwise gzip. The application does not compress. Login, refresh, and any body that contains a token are sent uncompressed. Compressed request bodies are rejected.
+
+**Reason.** A task list is text, and text shrinks a lot. That saves bandwidth on the path that gets busy first, which is people refreshing lists. Doing the compression in Python would spend application CPU on the same spike we are trying to survive. Leaving tokens uncompressed avoids a compression side channel against the secret.
+
+**Alternatives.** Compress inside the application — simple to code, and it competes with request handling for CPU. Compress everything, including login — better ratios, and a known way to leak a token. Cache the compressed bytes in Redis — we already decided not to cache per-user task data.
+
+**Trade-off.** The edge spends some CPU, and clients must accept `Content-Encoding`. Bodies under 1 KB are not worth it, so small responses stay plain. A client that cannot decompress is unaffected, because we only compress when `Accept-Encoding` asks for it.

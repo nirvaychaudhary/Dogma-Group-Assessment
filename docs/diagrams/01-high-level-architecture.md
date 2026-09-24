@@ -13,14 +13,16 @@ A person uses the web or mobile app. The request is checked at the edge, then ha
 ```mermaid
 flowchart TB
     person[Person using the web or mobile app]
-    edge[Content delivery network and firewall]
+    edge[Firewall, then compress large answers]
     balancer[Load balancer]
     app[Application server]
 
     person --> edge --> balancer --> app
 ```
 
-The edge blocks obvious attacks. The load balancer sends the request to a healthy server. Any server can answer, because the servers do not keep private memory of the user.
+The edge blocks obvious attacks. On the way back, it compresses a large JSON answer. Login responses, which contain a token, are left as they are.
+
+The load balancer sends the request to a healthy server. Any server can answer, because the servers do not keep private memory of the user.
 
 ---
 
